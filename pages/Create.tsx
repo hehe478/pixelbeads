@@ -1,9 +1,11 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ARTKAL_COLORS, Draft } from '../types';
+import { Draft } from '../types';
+import { useColorPalette } from '../context/ColorContext';
 
 const Create: React.FC = () => {
   const navigate = useNavigate();
+  const { allBeads } = useColorPalette();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -49,10 +51,12 @@ const Create: React.FC = () => {
 
   // Find closest color
   const findClosestColor = (r: number, g: number, b: number) => {
-    let minDistance = Infinity;
-    let closestColor = ARTKAL_COLORS[0].id;
+    if (!allBeads || allBeads.length === 0) return '000000';
 
-    ARTKAL_COLORS.forEach(color => {
+    let minDistance = Infinity;
+    let closestColor = allBeads[0].id;
+
+    allBeads.forEach(color => {
       const cRgb = hexToRgb(color.hex);
       // Simple Euclidean distance
       const distance = Math.sqrt(
@@ -89,53 +93,67 @@ const Create: React.FC = () => {
 
   const processImage = () => {
     if (!selectedFile || !previewUrl) return;
+    if (!allBeads || allBeads.length === 0) {
+        alert("颜色库加载中，请稍后再试");
+        return;
+    }
     
     setIsProcessing(true);
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      
-      const width = targetWidth;
-      // Calculate height based on aspect ratio
-      const height = Math.round(originalDimensions.height * (targetWidth / originalDimensions.width));
+      try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        const width = targetWidth;
+        // Calculate height based on aspect ratio
+        const height = Math.round(originalDimensions.height * (targetWidth / originalDimensions.width));
 
-      canvas.width = width;
-      canvas.height = height;
+        canvas.width = width;
+        canvas.height = height;
 
-      if (ctx) {
-        // Disable smoothing for pixel art look if desired, but for photo import usually we want smooth downsampling first
-        ctx.drawImage(img, 0, 0, width, height);
-        const imageData = ctx.getImageData(0, 0, width, height);
-        const data = imageData.data;
-        const initialGrid: {[key: string]: string} = {};
+        if (ctx) {
+          // Disable smoothing for pixel art look if desired, but for photo import usually we want smooth downsampling first
+          ctx.drawImage(img, 0, 0, width, height);
+          const imageData = ctx.getImageData(0, 0, width, height);
+          const data = imageData.data;
+          const initialGrid: {[key: string]: string} = {};
 
-        for (let y = 0; y < height; y++) {
-          for (let x = 0; x < width; x++) {
-            const index = (y * width + x) * 4;
-            const r = data[index];
-            const g = data[index + 1];
-            const b = data[index + 2];
-            const a = data[index + 3];
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              const index = (y * width + x) * 4;
+              const r = data[index];
+              const g = data[index + 1];
+              const b = data[index + 2];
+              const a = data[index + 3];
 
-            if (a > 128) { // If not transparent
-              const colorId = findClosestColor(r, g, b);
-              initialGrid[`${x},${y}`] = colorId;
+              if (a > 128) { // If not transparent
+                const colorId = findClosestColor(r, g, b);
+                initialGrid[`${x},${y}`] = colorId;
+              }
             }
           }
+          
+          navigate('/editor/imported', { 
+            state: { 
+              grid: initialGrid, 
+              width, 
+              height,
+              title: '导入的照片'
+            } 
+          });
         }
-        
+      } catch (err) {
+        console.error("Processing failed", err);
+        alert("图片处理出错");
+      } finally {
         setIsProcessing(false);
         setShowImportDialog(false);
-        navigate('/editor/imported', { 
-          state: { 
-            grid: initialGrid, 
-            width, 
-            height,
-            title: '导入的照片'
-          } 
-        });
       }
+    };
+    img.onerror = () => {
+        setIsProcessing(false);
+        alert("图片加载失败");
     };
     img.src = previewUrl;
   };

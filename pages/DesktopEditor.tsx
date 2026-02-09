@@ -414,14 +414,29 @@ const DesktopEditor: React.FC = () => {
   };
 
   const handleWheel = (e: React.WheelEvent) => {
-    if (e.ctrlKey) {
-      e.preventDefault();
-      const zoomSensitivity = 0.001;
-      const newScale = Math.min(Math.max(0.1, scale - e.deltaY * zoomSensitivity), 5);
-      setScale(newScale);
-    } else {
-      setOffset(prev => ({ x: prev.x - e.deltaX, y: prev.y - e.deltaY }));
-    }
+    // Zoom Logic
+    e.preventDefault();
+    if (!mainContainerRef.current) return;
+    
+    // Zoom toward cursor
+    const rect = mainContainerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const zoomSensitivity = 0.001;
+    const delta = -e.deltaY; // Standard: scroll down (positive) zooms out (negative delta for scale)
+    const newScale = Math.min(Math.max(0.1, scale * (1 + delta * zoomSensitivity)), 5);
+    
+    // Point in world coordinates before zoom
+    const worldX = (mouseX - offset.x) / scale;
+    const worldY = (mouseY - offset.y) / scale;
+    
+    // New offset to keep world point under mouse
+    const newOffsetX = mouseX - worldX * newScale;
+    const newOffsetY = mouseY - worldY * newScale;
+
+    setScale(newScale);
+    setOffset({ x: newOffsetX, y: newOffsetY });
   };
 
   const getGridCoord = (clientX: number, clientY: number) => {

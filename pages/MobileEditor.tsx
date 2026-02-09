@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams, useParams } from 'react-router-dom';
 import { Draft, BeadColor } from '../types';
 import { useColorPalette } from '../context/ColorContext';
+import { getTextColor } from '../utils/colors';
 import PaletteModal from '../components/PaletteModal';
 
 type Tool = 'pen' | 'eraser' | 'fill' | 'picker' | 'move';
@@ -57,6 +58,7 @@ const MobileEditor: React.FC = () => {
   const [tool, setTool] = useState<Tool>('pen');
   const [selectedBead, setSelectedBead] = useState<BeadColor | null>(null);
   const [showGrid, setShowGrid] = useState(true);
+  const [showNumbers, setShowNumbers] = useState(false);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
 
   // History
@@ -65,9 +67,13 @@ const MobileEditor: React.FC = () => {
 
   const isDragging = useRef(false);
   const isDrawing = useRef(false);
+  const isPinching = useRef(false);
+  const lastPinchRef = useRef<{ distance: number; center: { x: number; y: number } } | null>(null);
+  
   const lastTouchPos = useRef({ x: 0, y: 0 });
   const startStrokeGrid = useRef<{[key: string]: string} | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const rulerCanvasRef = useRef<HTMLCanvasElement>(null);
   
   const autoSaveRef = useRef({ grid, title, bounds, isFreeMode, offset, scale });
 
@@ -129,6 +135,135 @@ const MobileEditor: React.FC = () => {
     const timer = setInterval(() => handleSave(true), 10000); 
     return () => clearInterval(timer);
   }, []);
+
+  // Rulers Rendering Logic
+  useEffect(() => {
+    const canvas = rulerCanvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const updateRulers = () => {
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+        const width = canvas.width;
+        const height = canvas.height;
+        
+        ctx.clearRect(0, 0, width, height);
+        
+        const RULER_THICKNESS = 20;
+        
+        // Draw backgrounds
+        ctx.fillStyle = 'rgba(248, 250, 252, 0.9)';
+        ctx.fillRect(0, 0, width, RULER_THICKNESS);
+        ctx.fillRect(0, 0, RULER_THICKNESS, height);
+        
+        // Lines
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, RULER_THICKNESS); ctx.lineTo(width, RULER_THICKNESS);
+        ctx.moveTo(RULER_THICKNESS, 0); ctx.lineTo(RULER_THICKNESS, height);
+        ctx.stroke();
+
+        ctx.fillStyle = '#64748b';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const originX = offset.x;
+        const originY = offset.y;
+
+        // X-Axis Ruler
+        const startVal = Math.floor((RULER_THICKNESS - originX) / (CELL_SIZE * scale));
+        const endVal = Math.ceil((width - originX) / (CELL_SIZE * scale));
+        
+        const renderStart = startVal - 2;
+        const renderEnd = endVal + 2;
+
+        for (let i = renderStart; i <= renderEnd; i++) {
+            const screenX = originX + i * CELL_SIZE * scale;
+            if (screenX < RULER_THICKNESS) continue; 
+
+            const isMajor = Math.abs(i) % 5 === 0;
+            const isOrigin = i === 0;
+            
+            if (scale < 0.4 && !isMajor && !isOrigin) continue;
+
+            ctx.beginPath();
+            if (isMajor || isOrigin) {
+                ctx.moveTo(screenX, RULER_THICKNESS - 8);
+                ctx.lineTo(screenX, RULER_THICKNESS);
+                ctx.strokeStyle = isOrigin ? '#6366f1' : '#94a3b8';
+                ctx.lineWidth = isOrigin ? 1.5 : 1;
+                ctx.stroke();
+                
+                ctx.fillStyle = isOrigin ? '#6366f1' : '#64748b';
+                if (scale > 0.3) {
+                     ctx.fillText(i.toString(), screenX + (CELL_SIZE*scale)/2, RULER_THICKNESS / 2);
+                }
+            } else {
+                ctx.moveTo(screenX, RULER_THICKNESS - 4);
+                ctx.lineTo(screenX, RULER_THICKNESS);
+                ctx.strokeStyle = '#cbd5e1';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+        }
+        
+        // Y-Axis Ruler
+        const startRow = Math.floor((RULER_THICKNESS - originY) / (CELL_SIZE * scale));
+        const endRow = Math.ceil((height - originY) / (CELL_SIZE * scale));
+        const renderRowStart = startRow - 2;
+        const renderRowEnd = endRow + 2;
+
+        for (let i = renderRowStart; i <= renderRowEnd; i++) {
+            const screenY = originY + i * CELL_SIZE * scale;
+            if (screenY < RULER_THICKNESS) continue;
+
+            const isMajor = Math.abs(i) % 5 === 0;
+            const isOrigin = i === 0;
+            
+            if (scale < 0.4 && !isMajor && !isOrigin) continue;
+
+            ctx.beginPath();
+            if (isMajor || isOrigin) {
+                ctx.moveTo(RULER_THICKNESS - 8, screenY);
+                ctx.lineTo(RULER_THICKNESS, screenY);
+                ctx.strokeStyle = isOrigin ? '#6366f1' : '#94a3b8';
+                ctx.lineWidth = isOrigin ? 1.5 : 1;
+                ctx.stroke();
+                 ctx.save();
+                 ctx.translate(RULER_THICKNESS / 2, screenY + (CELL_SIZE*scale)/2);
+                 ctx.rotate(-Math.PI / 2);
+                 ctx.fillStyle = isOrigin ? '#6366f1' : '#64748b';
+                 if (scale > 0.3) {
+                    ctx.fillText(i.toString(), 0, 0);
+                 }
+                 ctx.restore();
+            } else {
+                ctx.moveTo(RULER_THICKNESS - 4, screenY);
+                ctx.lineTo(RULER_THICKNESS, screenY);
+                ctx.strokeStyle = '#cbd5e1';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+        }
+
+        // Corner
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0,0, RULER_THICKNESS, RULER_THICKNESS);
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.strokeRect(0,0, RULER_THICKNESS, RULER_THICKNESS);
+    };
+
+    updateRulers();
+    window.addEventListener('resize', updateRulers);
+    return () => window.removeEventListener('resize', updateRulers);
+
+  }, [scale, offset, bounds, isFreeMode]);
 
   const handleSave = (silent = false) => {
     setSaveStatus('saving');
@@ -193,9 +328,7 @@ const MobileEditor: React.FC = () => {
   };
 
   const handleExport = () => {
-     // Save first to ensure draft ID is stable and state is persisted
      handleSave(true);
-     
      const width = bounds.maxX - bounds.minX;
      const height = bounds.maxY - bounds.minY;
      const normalizedGrid: {[key: string]: string} = {};
@@ -204,7 +337,6 @@ const MobileEditor: React.FC = () => {
          normalizedGrid[`${x - bounds.minX},${y - bounds.minY}`] = val as string;
      });
      
-     // Use the stable draft ID for the preview URL
      const targetId = draftIdRef.current || 'custom';
      
      navigate(`/preview/${targetId}`, { 
@@ -255,34 +387,129 @@ const MobileEditor: React.FC = () => {
      };
   };
 
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    if (!containerRef.current) return;
+    
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    // Zoom speed
+    const zoomIntensity = 0.001; 
+    const delta = -e.deltaY;
+    // Calculate new scale
+    const newScale = Math.min(Math.max(0.1, scale * (1 + delta * zoomIntensity)), 5);
+    
+    // Calculate new offset to zoom towards pointer
+    // Formula: mouse - (mouse - oldOffset) * (newScale / oldScale)
+    const worldX = (mouseX - offset.x) / scale;
+    const worldY = (mouseY - offset.y) / scale;
+    
+    const newOffsetX = mouseX - worldX * newScale;
+    const newOffsetY = mouseY - worldY * newScale;
+
+    setScale(newScale);
+    setOffset({ x: newOffsetX, y: newOffsetY });
+  };
+
   const handleTouchStart = (e: React.TouchEvent) => {
+     // Multi-touch Logic
      if (e.touches.length === 2) {
-         isDragging.current = true;
+         isPinching.current = true;
+         isDrawing.current = false; // Cancel any drawing
+         
+         const t1 = e.touches[0];
+         const t2 = e.touches[1];
+         
+         const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+         const center = {
+             x: (t1.clientX + t2.clientX) / 2,
+             y: (t1.clientY + t2.clientY) / 2
+         };
+         
+         lastPinchRef.current = { distance: dist, center };
          return;
      }
      
+     // Pan Tool Logic
      if (tool === 'move') {
          isDragging.current = true;
          lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
          return;
      }
 
-     const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
-     handleCellAction(x, y);
+     // Drawing Logic
+     if (e.touches.length === 1 && !isPinching.current) {
+        const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
+        handleCellAction(x, y);
+     }
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-      if (e.touches.length === 2 || (tool === 'move' && isDragging.current)) {
-          if (tool === 'move' && e.touches.length === 1) {
-              const dx = e.touches[0].clientX - lastTouchPos.current.x;
-              const dy = e.touches[0].clientY - lastTouchPos.current.y;
-              setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
-              lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      // Prevent default to avoid browser zooming/scrolling
+      if (e.cancelable) e.preventDefault();
+
+      // Pinch Zoom & Pan Logic
+      if (e.touches.length === 2 && lastPinchRef.current) {
+          const t1 = e.touches[0];
+          const t2 = e.touches[1];
+          
+          const currentDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+          const currentCenter = {
+              x: (t1.clientX + t2.clientX) / 2,
+              y: (t1.clientY + t2.clientY) / 2
+          };
+          
+          const { distance: lastDist, center: lastCenter } = lastPinchRef.current;
+          
+          if (lastDist > 0) {
+              // Calculate standard linear zoom factor
+              const rawZoomFactor = currentDist / lastDist;
+              
+              // Amplify changes to make it faster
+              // If raw is 1.02 (zooming in), we make it 1.03 (1 + 0.02 * 1.5)
+              // If raw is 0.98 (zooming out), we make it 0.97 (1 - 0.02 * 1.5)
+              const sensitivity = 5; 
+              const amplifiedZoomFactor = 1 + (rawZoomFactor - 1) * sensitivity;
+
+              const newScale = Math.min(Math.max(0.1, scale * amplifiedZoomFactor), 5);
+              
+              // Calculate Offset correction to keep pinch center stable
+              const containerRect = containerRef.current?.getBoundingClientRect();
+              if (containerRect) {
+                  const oldWorldX = (lastCenter.x - containerRect.left - offset.x) / scale;
+                  const oldWorldY = (lastCenter.y - containerRect.top - offset.y) / scale;
+                  
+                  const newOffsetX = currentCenter.x - containerRect.left - (oldWorldX * newScale);
+                  const newOffsetY = currentCenter.y - containerRect.top - (oldWorldY * newScale);
+                  
+                  setScale(newScale);
+                  setOffset({ x: newOffsetX, y: newOffsetY });
+              } else {
+                  // Fallback
+                  const dx = currentCenter.x - lastCenter.x;
+                  const dy = currentCenter.y - lastCenter.y;
+                  setScale(newScale);
+                  setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+              }
           }
+          
+          lastPinchRef.current = { distance: currentDist, center: currentCenter };
           return;
       }
 
-      if (tool !== 'move' && !isDragging.current) {
+      // Single Finger Pan
+      if (tool === 'move' && isDragging.current && e.touches.length === 1) {
+          const dx = e.touches[0].clientX - lastTouchPos.current.x;
+          const dy = e.touches[0].clientY - lastTouchPos.current.y;
+          setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+          lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+          return;
+      }
+
+      // Single Finger Draw
+      if (tool !== 'move' && !isDragging.current && !isPinching.current && e.touches.length === 1) {
           const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
           if (isDrawing.current && (tool === 'pen' || tool === 'eraser')) {
               handleCellAction(x, y);
@@ -292,6 +519,8 @@ const MobileEditor: React.FC = () => {
   
   const handleTouchEnd = () => {
       isDragging.current = false;
+      isPinching.current = false;
+      lastPinchRef.current = null;
       if (isDrawing.current) {
           commitHistory(grid);
       }
@@ -413,7 +642,7 @@ const MobileEditor: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden select-none">
+    <div className="flex flex-col h-[100dvh] w-full bg-slate-100 overflow-hidden select-none">
        {/* Top Bar */}
        <div className="h-14 bg-white shadow-sm flex items-center justify-between px-4 z-20 shrink-0">
            <button onClick={() => navigate('/create')} className="p-2 -ml-2 text-slate-600">
@@ -421,6 +650,12 @@ const MobileEditor: React.FC = () => {
            </button>
            
            <div className="flex gap-2">
+                <button onClick={() => setShowGrid(!showGrid)} className={`p-2 transition-colors ${showGrid ? 'text-primary' : 'text-slate-600'}`}>
+                    <span className="material-symbols-outlined text-[20px]">grid_4x4</span>
+                </button>
+                <button onClick={() => setShowNumbers(!showNumbers)} className={`p-2 transition-colors ${showNumbers ? 'text-primary' : 'text-slate-600'}`}>
+                    <span className="material-symbols-outlined text-[20px]">123</span>
+                </button>
                 <button onClick={handleUndo} disabled={historyIndex === 0} className="p-2 text-slate-600 disabled:opacity-30">
                     <span className="material-symbols-outlined">undo</span>
                 </button>
@@ -439,14 +674,17 @@ const MobileEditor: React.FC = () => {
        {/* Canvas Container with touch-action: none */}
        <div 
          ref={containerRef}
-         className="flex-1 relative overflow-hidden bg-slate-200 touch-none"
+         className="flex-1 relative overflow-hidden bg-slate-200 touch-none cursor-crosshair"
          style={{ touchAction: 'none' }} 
+         onWheel={handleWheel}
          onTouchStart={handleTouchStart}
          onTouchMove={handleTouchMove}
          onTouchEnd={handleTouchEnd}
        >
+          <canvas ref={rulerCanvasRef} className="absolute inset-0 pointer-events-none z-10" />
+
           <div 
-             className="absolute origin-top-left transition-transform duration-75 ease-out"
+             className="absolute origin-top-left"
              style={{ 
                transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})` 
              }}
@@ -473,19 +711,29 @@ const MobileEditor: React.FC = () => {
                       if (x < bounds.minX || x >= bounds.maxX || y < bounds.minY || y >= bounds.maxY) return null;
                       
                       const color = allBeads.find(c => c.id === colorId);
-                      
+                      if (!color) return null;
+
                       return (
                           <div 
                             key={key}
+                            className="absolute flex items-center justify-center"
                             style={{
-                                position: 'absolute',
                                 left: (x - bounds.minX) * CELL_SIZE,
                                 top: (y - bounds.minY) * CELL_SIZE,
                                 width: CELL_SIZE,
                                 height: CELL_SIZE,
-                                backgroundColor: color?.hex || '#000'
+                                backgroundColor: color.hex
                             }}
-                          />
+                          >
+                             {showNumbers && (
+                                <span 
+                                  className="text-[8px] font-bold select-none pointer-events-none"
+                                  style={{ color: getTextColor(color.hex), fontSize: '8px' }}
+                                >
+                                  {color.code}
+                                </span>
+                             )}
+                          </div>
                       )
                   })}
               </div>
