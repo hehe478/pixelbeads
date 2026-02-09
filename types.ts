@@ -11,11 +11,27 @@ export interface PixelArt {
   colorCount?: number;
 }
 
+export interface BeadRaw {
+  id: string;
+  code: string;
+  rgb: number[];
+  sets: number[];
+}
+
 export interface BeadColor {
   id: string;
-  name: string;
+  name?: string;
   hex: string;
-  code?: string;
+  code: string;
+  brand: string;
+  sets: number[];
+}
+
+export interface PaletteConfig {
+  brand: string;
+  set: number | 'all' | 'custom';
+  customIds: string[]; // List of IDs if set is 'custom'
+  hiddenIds: string[]; // List of IDs to hide from standard sets
 }
 
 export interface Draft {
@@ -34,20 +50,8 @@ export interface Draft {
   zoom?: number;
 }
 
-export const ARTKAL_COLORS: BeadColor[] = [
-  { id: 'C01', name: 'Black', hex: '#000000', code: 'S01' },
-  { id: 'C02', name: 'White', hex: '#FFFFFF', code: 'S02' },
-  { id: 'C03', name: 'Red', hex: '#E60012', code: 'S05' },
-  { id: 'C04', name: 'Orange', hex: '#F39800', code: 'S08' },
-  { id: 'C05', name: 'Yellow', hex: '#FFF100', code: 'S10' },
-  { id: 'C06', name: 'Green', hex: '#009944', code: 'S16' },
-  { id: 'C07', name: 'Blue', hex: '#0068B7', code: 'S19' },
-  { id: 'C08', name: 'Purple', hex: '#920783', code: 'S26' },
-  { id: 'C09', name: 'Pink', hex: '#E4007F', code: 'S31' },
-  { id: 'C10', name: 'Grey', hex: '#9FA0A0', code: 'S68' },
-  { id: 'C11', name: 'Brown', hex: '#603813', code: 'S60' },
-  { id: 'C12', name: 'Sky Blue', hex: '#00A0E9', code: 'S18' }
-];
+// Fallback constant removed, will be loaded from JSON via Context
+export const ARTKAL_COLORS: BeadColor[] = []; 
 
 export const DEMO_ARTS: PixelArt[] = [
   {

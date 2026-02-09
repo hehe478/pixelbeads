@@ -1,36 +1,65 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { DEMO_ARTS, CATEGORIES } from '../types';
+import { useColorPalette } from '../context/ColorContext';
+import PaletteModal from '../components/PaletteModal';
 
 const Inspiration: React.FC = () => {
   const navigate = useNavigate();
+  const { availableBrands, availableSets, paletteConfig, setBrand, setSet } = useColorPalette();
+  const [isPaletteModalOpen, setIsPaletteModalOpen] = useState(false);
 
   return (
     <div className="relative flex h-full min-h-screen w-full flex-col overflow-hidden mx-auto max-w-md bg-background-light dark:bg-background-dark shadow-2xl pb-24">
-      {/* Header */}
-      <div className="sticky top-0 z-20 bg-background-light/95 dark:bg-background-dark/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 pb-2">
+      {/* Header with Palette Selector */}
+      <div className="sticky top-0 z-20 bg-background-light/95 dark:bg-background-dark/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 pb-3">
         <div className="h-11 w-full"></div>
-        <div className="px-4 pb-2">
-          <div className="flex items-center justify-between mb-4">
+        <div className="px-4">
+          <div className="flex items-center justify-between mb-3">
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">发现灵感</h1>
             <button className="flex items-center justify-center w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-primary/10 hover:text-primary transition-colors">
               <span className="material-symbols-outlined">notifications</span>
             </button>
           </div>
-          <label className="flex flex-col h-12 w-full">
-            <div className="flex w-full flex-1 items-stretch rounded-full h-full shadow-sm">
-              <div className="text-gray-500 dark:text-gray-400 flex border-none bg-white dark:bg-[#1a1a2e] items-center justify-center pl-4 rounded-l-full border-r-0">
-                <span className="material-symbols-outlined">search</span>
-              </div>
-              <input 
-                className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-full text-gray-900 dark:text-white focus:outline-0 focus:ring-0 focus:border-transparent border-none bg-white dark:bg-[#1a1a2e] h-full placeholder:text-gray-400 px-4 rounded-l-none border-l-0 pl-2 text-base font-normal leading-normal" 
-                placeholder="搜索图案..." 
-              />
-              <div className="text-primary flex border-none bg-white dark:bg-[#1a1a2e] items-center justify-center pr-4 rounded-r-full border-l-0 cursor-pointer">
-                <span className="material-symbols-outlined">tune</span>
-              </div>
-            </div>
-          </label>
+          
+          {/* Color Palette Selector */}
+          <div className="bg-white dark:bg-[#1a1a2e] rounded-2xl p-1.5 shadow-sm border border-gray-100 dark:border-gray-700 flex gap-2">
+             <div className="flex-1 min-w-0">
+               <label className="text-[10px] text-gray-400 pl-2 block mb-0.5 font-medium">品牌</label>
+               <select 
+                 value={paletteConfig.brand}
+                 onChange={(e) => setBrand(e.target.value)}
+                 className="w-full bg-transparent border-none text-sm font-bold text-gray-800 dark:text-white p-0 pl-2 focus:ring-0 cursor-pointer"
+               >
+                 {availableBrands.map(b => (
+                   <option key={b} value={b}>{b}</option>
+                 ))}
+               </select>
+             </div>
+             
+             <div className="w-[1px] bg-gray-200 dark:bg-gray-700 my-1"></div>
+
+             <div className="flex-1 min-w-0">
+               <label className="text-[10px] text-gray-400 pl-2 block mb-0.5 font-medium">套装</label>
+               <select 
+                 value={paletteConfig.set}
+                 onChange={(e) => setSet(e.target.value === 'custom' ? 'custom' : Number(e.target.value))}
+                 className="w-full bg-transparent border-none text-sm font-bold text-gray-800 dark:text-white p-0 pl-2 focus:ring-0 cursor-pointer"
+               >
+                 {availableSets.map(s => (
+                   <option key={s} value={s}>{s}色套装</option>
+                 ))}
+                 <option value="custom">我的专用</option>
+               </select>
+             </div>
+
+             <button 
+               onClick={() => setIsPaletteModalOpen(true)}
+               className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center hover:bg-primary hover:text-white transition-colors"
+             >
+               <span className="material-symbols-outlined text-[20px]">palette</span>
+             </button>
+          </div>
         </div>
       </div>
 
@@ -63,20 +92,8 @@ const Inspiration: React.FC = () => {
           ))}
         </div>
 
-        {/* Sub Categories */}
-        <div className="flex gap-2 px-4 pb-4 overflow-x-auto hide-scrollbar">
-          <button className="flex h-8 shrink-0 items-center justify-center gap-x-2 rounded-full bg-primary/10 dark:bg-primary/20 pl-4 pr-4 transition-colors">
-            <span className="text-primary dark:text-indigo-300 text-xs font-bold leading-normal">全部卡通</span>
-          </button>
-          {CATEGORIES.slice(5).map(cat => (
-            <button key={cat} className="flex h-8 shrink-0 items-center justify-center gap-x-2 rounded-full bg-gray-100 dark:bg-gray-800 pl-4 pr-4 transition-colors hover:bg-gray-200 dark:hover:bg-gray-700">
-              <span className="text-gray-600 dark:text-gray-400 text-xs font-medium leading-normal">{cat}</span>
-            </button>
-          ))}
-        </div>
-
         {/* Masonry Grid */}
-        <div className="px-4 pb-4">
+        <div className="px-4 pb-4 mt-2">
           <div className="columns-2 gap-4 space-y-4">
             {DEMO_ARTS.map((art) => (
               <div 
@@ -111,6 +128,8 @@ const Inspiration: React.FC = () => {
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
         </div>
       </div>
+
+      <PaletteModal isOpen={isPaletteModalOpen} onClose={() => setIsPaletteModalOpen(false)} />
     </div>
   );
 };

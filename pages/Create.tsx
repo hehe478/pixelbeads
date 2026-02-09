@@ -16,6 +16,10 @@ const Create: React.FC = () => {
   const [originalDimensions, setOriginalDimensions] = useState({ width: 0, height: 0 });
   const [targetWidth, setTargetWidth] = useState(50);
 
+  // Delete Dialog State
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [draftToDelete, setDraftToDelete] = useState<string | null>(null);
+
   // Load drafts on mount
   useEffect(() => {
     try {
@@ -136,15 +140,22 @@ const Create: React.FC = () => {
     img.src = previewUrl;
   };
 
-  const handleDelete = (e: React.MouseEvent, id: string) => {
+  const handleDeleteClick = (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     e.stopPropagation();
-    if (window.confirm('确定要删除这个草稿吗？')) {
+    setDraftToDelete(id);
+    setShowDeleteDialog(true);
+  };
+
+  const confirmDelete = () => {
+    if (draftToDelete) {
       // Cast both to string to ensure matching even if one is number
-      const updatedDrafts = drafts.filter(d => String(d.id) !== String(id));
+      const updatedDrafts = drafts.filter(d => String(d.id) !== String(draftToDelete));
       setDrafts(updatedDrafts);
       localStorage.setItem('pixelbead_drafts', JSON.stringify(updatedDrafts));
     }
+    setShowDeleteDialog(false);
+    setDraftToDelete(null);
   };
 
   const getTimeAgo = (timestamp: number) => {
@@ -318,7 +329,7 @@ const Create: React.FC = () => {
                         <span className="material-symbols-outlined text-sm">edit</span>
                       </button>
                       <button 
-                        onClick={(e) => handleDelete(e, draft.id)}
+                        onClick={(e) => handleDeleteClick(e, draft.id)}
                         className="h-8 w-8 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 text-red-500 shadow-sm border border-slate-100 dark:border-slate-700 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                       >
                         <span className="material-symbols-outlined text-sm">delete</span>
@@ -338,7 +349,7 @@ const Create: React.FC = () => {
 
       {/* Import Dialog */}
       {showImportDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
           <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center">
               <h3 className="font-bold text-gray-900 dark:text-white">设置导入参数</h3>
@@ -413,6 +424,39 @@ const Create: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Dialog */}
+      {showDeleteDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="p-4 flex flex-col items-center pt-8 pb-6">
+               <div className="h-14 w-14 rounded-full bg-red-50 dark:bg-red-900/20 text-red-500 flex items-center justify-center mb-4">
+                  <span className="material-symbols-outlined text-3xl">delete</span>
+               </div>
+               <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">删除草稿</h3>
+               <p className="text-sm text-gray-500 dark:text-gray-400 text-center px-4">
+                 确定要永久删除这个作品吗？<br/>此操作无法撤销。
+               </p>
+            </div>
+            
+            <div className="p-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-black/10 flex gap-3">
+              <button 
+                onClick={() => setShowDeleteDialog(false)}
+                className="flex-1 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-medium hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              >
+                取消
+              </button>
+              <button 
+                onClick={confirmDelete}
+                className="flex-1 py-2.5 rounded-xl bg-red-500 text-white font-bold shadow-lg shadow-red-500/30 hover:bg-red-600 transition-colors"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

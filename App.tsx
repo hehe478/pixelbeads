@@ -6,6 +6,7 @@ import Profile from './pages/Profile';
 import Editor from './pages/Editor';
 import ExportPreview from './pages/ExportPreview';
 import BottomNav from './components/BottomNav';
+import { ColorProvider } from './context/ColorContext';
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -27,9 +28,11 @@ const AppContent: React.FC = () => {
 
 const App: React.FC = () => {
   return (
-    <HashRouter>
-      <AppContent />
-    </HashRouter>
+    <ColorProvider>
+      <HashRouter>
+        <AppContent />
+      </HashRouter>
+    </ColorProvider>
   );
 };
 
