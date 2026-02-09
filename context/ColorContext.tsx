@@ -5,7 +5,8 @@ import { rgbToHex } from '../utils/colors';
 
 interface ColorContextType {
   allBeads: BeadColor[];
-  currentPalette: BeadColor[];
+  currentPalette: BeadColor[]; // Kept for backward compatibility if needed, but primary usage moves to allBeads + filtering
+  recentColors: BeadColor[];
   paletteConfig: PaletteConfig;
   availableBrands: string[];
   availableSets: number[];
@@ -14,6 +15,7 @@ interface ColorContextType {
   toggleHiddenColor: (id: string) => void;
   toggleCustomColor: (id: string) => void;
   resetCustomPalette: () => void;
+  addToRecent: (color: BeadColor) => void;
 }
 
 const ColorContext = createContext<ColorContextType | undefined>(undefined);
@@ -48,10 +50,30 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   });
 
+  const [recentColors, setRecentColors] = useState<BeadColor[]>(() => {
+    try {
+      const saved = localStorage.getItem('pixelbead_recent_colors');
+      if (saved) {
+        const parsedIds = JSON.parse(saved) as string[];
+        // Rehydrate full objects from IDs
+        return parsedIds.map(id => processedBeads.find(b => b.id === id)).filter((b): b is BeadColor => !!b);
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  });
+
   // Persist config
   useEffect(() => {
     localStorage.setItem('pixelbead_palette_config', JSON.stringify(paletteConfig));
   }, [paletteConfig]);
+
+  // Persist recents
+  useEffect(() => {
+    const ids = recentColors.map(c => c.id);
+    localStorage.setItem('pixelbead_recent_colors', JSON.stringify(ids));
+  }, [recentColors]);
 
   // Derived Data
   const availableBrands = useMemo(() => {
@@ -65,16 +87,11 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return Array.from(sets).sort((a, b) => a - b);
   }, [paletteConfig.brand]);
 
-  // Filter Logic
+  // Legacy Filter Logic (Still useful for quick filtering if needed)
   const currentPalette = useMemo(() => {
     let baseList = processedBeads.filter(b => b.brand === paletteConfig.brand);
 
     if (paletteConfig.set === 'custom') {
-      return processedBeads.filter(b => paletteConfig.customIds.includes(b.id)); // Allow cross-brand custom palettes in future? Currently restricted to filtered list logic usually, but here we can be flexible. 
-      // For simplicity, let's keep custom restricted to current brand or allow global?
-      // Requirement says "Custom scheme... completely free choice". Let's assume global access for custom.
-      // Actually, step C says "User can see current set colors... or add from full set".
-      // Let's implement: Custom Palette is a list of ANY ID.
       return processedBeads.filter(b => paletteConfig.customIds.includes(b.id));
     } else if (paletteConfig.set !== 'all') {
       baseList = baseList.filter(b => b.sets.includes(paletteConfig.set as number));
@@ -86,13 +103,11 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Actions
   const setBrand = (brand: string) => {
-    // When switching brand, try to find a matching set or default to first available
     const brandBeads = processedBeads.filter(b => b.brand === brand);
     const brandSets = new Set<number>();
     brandBeads.forEach(b => b.sets?.forEach(s => brandSets.add(s)));
     const setsArr = Array.from(brandSets).sort((a, b) => a - b);
     
-    // If current set exists in new brand, keep it. Else pick first set.
     let newSet = paletteConfig.set;
     if (newSet !== 'all' && newSet !== 'custom' && !brandSets.has(newSet as number)) {
         newSet = setsArr.length > 0 ? setsArr[0] : 'all';
@@ -133,10 +148,18 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setPaletteConfig(prev => ({...prev, customIds: []}));
   }
 
+  const addToRecent = (color: BeadColor) => {
+    setRecentColors(prev => {
+      const filtered = prev.filter(c => c.id !== color.id);
+      return [color, ...filtered].slice(0, 20); // Keep last 20
+    });
+  };
+
   return (
     <ColorContext.Provider value={{
       allBeads: processedBeads,
       currentPalette,
+      recentColors,
       paletteConfig,
       availableBrands,
       availableSets,
@@ -144,7 +167,8 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setSet,
       toggleHiddenColor,
       toggleCustomColor,
-      resetCustomPalette
+      resetCustomPalette,
+      addToRecent
     }}>
       {children}
     </ColorContext.Provider>
@@ -157,4 +181,4 @@ export const useColorPalette = () => {
     throw new Error('useColorPalette must be used within a ColorProvider');
   }
   return context;
-};
+}

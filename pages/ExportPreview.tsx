@@ -1,11 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { ARTKAL_COLORS } from '../types';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useColorPalette } from '../context/ColorContext';
+import { getTextColor } from '../utils/colors';
 
 const ExportPreview: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { id } = useParams();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { allBeads } = useColorPalette();
   
   // Get data from location state or fallback
   const { grid = {}, width = 50, height = 50, title = '未命名作品' } = location.state || {};
@@ -13,7 +16,20 @@ const ExportPreview: React.FC = () => {
   const [totalBeads, setTotalBeads] = useState(0);
   const [colorCounts, setColorCounts] = useState<{[key: string]: number}>({});
 
+  // Fix: Memoize Order ID and Date to prevent changes on re-render
+  const { dateStr, timeStr, orderId } = useMemo(() => {
+    const now = new Date();
+    return {
+      dateStr: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
+      timeStr: `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`,
+      // Use ID if available to make order ID consistent, otherwise random
+      orderId: id && id !== 'custom' ? `#PB-${id.slice(-5).toUpperCase()}` : `#PB-${now.getTime().toString().slice(-5)}`
+    };
+  }, [id]);
+
   useEffect(() => {
+    if (!allBeads || allBeads.length === 0) return;
+
     // Calculate stats
     const counts: {[key: string]: number} = {};
     let total = 0;
@@ -102,7 +118,7 @@ const ExportPreview: React.FC = () => {
         // Draw Beads and Codes
         Object.entries(grid).forEach(([key, colorId]: [string, any]) => {
           const [x, y] = key.split(',').map(Number);
-          const color = ARTKAL_COLORS.find(c => c.id === colorId);
+          const color = allBeads.find(c => c.id === colorId);
           if (color) {
             const posX = PADDING_LEFT + x * CELL_SIZE;
             const posY = PADDING_TOP + y * CELL_SIZE;
@@ -111,15 +127,9 @@ const ExportPreview: React.FC = () => {
             ctx.fillStyle = color.hex;
             ctx.fillRect(posX, posY, CELL_SIZE, CELL_SIZE);
 
-            // Determine text color (simple contrast)
-            const r = parseInt(color.hex.slice(1, 3), 16);
-            const g = parseInt(color.hex.slice(3, 5), 16);
-            const b = parseInt(color.hex.slice(5, 7), 16);
-            const isLight = (r * 0.299 + g * 0.587 + b * 0.114) > 128;
-            
-            // Draw Code
-            ctx.fillStyle = isLight ? '#000000' : '#ffffff';
-            ctx.font = 'bold 9px sans-serif'; // Slightly smaller for code
+            // Determine text color using utility
+            ctx.fillStyle = getTextColor(color.hex);
+            ctx.font = 'bold 9px sans-serif'; 
             if (color.code) {
                ctx.fillText(color.code, posX + CELL_SIZE / 2, posY + CELL_SIZE / 2);
             }
@@ -141,35 +151,38 @@ const ExportPreview: React.FC = () => {
         ctx.stroke();
       }
     }
-  }, [grid, width, height]);
-
-  // Format date
-  const now = new Date();
-  const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
-  const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-  const orderId = `#PB-${now.getTime().toString().slice(-5)}`;
+  }, [grid, width, height, allBeads]);
 
   const handleBack = () => {
-    // Navigate back to custom editor specifically, passing state to prevent clearing
-    navigate('/editor/custom', {
-      state: {
-        grid,
-        width,
-        height,
-        title
-      }
-    });
+    if (window.history.state && window.history.length > 1) {
+       navigate(-1);
+    } else {
+       // Fallback if opened directly or history is missing
+       navigate(`/editor/${id || 'custom'}`, {
+         state: { grid, width, height, title }
+       });
+    }
+  };
+
+  const downloadImage = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const link = document.createElement('a');
+      link.download = `pixelbead-${title}-${Date.now()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
   };
 
   return (
     <div className="bg-black/80 font-display antialiased h-full w-full overflow-y-auto flex flex-col items-center relative z-50">
-      <div className="sticky top-0 w-full p-4 flex justify-between items-center z-50 text-white bg-black/40 backdrop-blur-md shrink-0">
-          <button onClick={handleBack} className="flex items-center justify-center p-2 rounded-full bg-white/10 backdrop-blur hover:bg-white/20 transition">
-          <span className="material-symbols-outlined text-white font-light">close</span>
+      <div className="sticky top-0 w-full p-4 flex justify-between items-center z-[60] text-white bg-black/40 backdrop-blur-md shrink-0">
+          <button onClick={handleBack} className="flex items-center justify-center p-2 rounded-full bg-white/10 backdrop-blur hover:bg-white/20 transition cursor-pointer">
+             <span className="material-symbols-outlined text-white font-light">close</span>
           </button>
           <span className="text-sm font-medium opacity-80">导出预览</span>
-          <button className="flex items-center justify-center p-2 rounded-full bg-white/10 backdrop-blur hover:bg-white/20 transition">
-          <span className="material-symbols-outlined text-white font-light">ios_share</span>
+          <button onClick={downloadImage} className="flex items-center justify-center p-2 rounded-full bg-white/10 backdrop-blur hover:bg-white/20 transition cursor-pointer">
+             <span className="material-symbols-outlined text-white font-light">ios_share</span>
           </button>
       </div>
 
@@ -196,7 +209,7 @@ const ExportPreview: React.FC = () => {
               </div>
 
               <div className="p-4 bg-gray-50 dark:bg-black/20 overflow-x-auto">
-              {/* Canvas Container with horizontal scroll if needed */}
+              {/* Canvas Container */}
               <div className="min-w-full flex items-center justify-center">
                   <canvas 
                   ref={canvasRef} 
@@ -224,7 +237,7 @@ const ExportPreview: React.FC = () => {
 
               <div className="p-6 grid grid-cols-2 sm:grid-cols-3 gap-3">
               {Object.entries(colorCounts).map(([colorId, count]) => {
-                  const color = ARTKAL_COLORS.find(c => c.id === colorId);
+                  const color = allBeads.find(c => c.id === colorId);
                   if (!color) return null;
                   return (
                   <div key={colorId} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-100 dark:border-white/5">
@@ -262,7 +275,7 @@ const ExportPreview: React.FC = () => {
       </div>
       
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 px-6 z-30 w-full max-w-sm">
-          <button className="w-full bg-primary hover:bg-blue-600 active:scale-[0.98] transition-all text-white font-bold py-4 px-6 rounded-full shadow-lg shadow-primary/30 flex items-center justify-center gap-2 text-lg">
+          <button onClick={downloadImage} className="w-full bg-primary hover:bg-blue-600 active:scale-[0.98] transition-all text-white font-bold py-4 px-6 rounded-full shadow-lg shadow-primary/30 flex items-center justify-center gap-2 text-lg">
           <span className="material-symbols-outlined font-light">download</span>
           保存图片回执
           </button>

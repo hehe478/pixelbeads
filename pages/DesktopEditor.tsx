@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams, useParams } from 'react-router-dom';
-import { Draft } from '../types';
+import { Draft, BeadColor } from '../types';
 import { useColorPalette } from '../context/ColorContext';
 import { getTextColor } from '../utils/colors';
+import PaletteModal from '../components/PaletteModal';
 
 type Tool = 'pen' | 'eraser' | 'fill' | 'picker' | 'move';
 
@@ -13,7 +14,7 @@ const DesktopEditor: React.FC = () => {
   const [searchParams] = useSearchParams();
   const state = location.state as { grid?: {[key: string]: string}, width?: number, height?: number, title?: string, minX?: number, minY?: number, isFreeMode?: boolean };
 
-  const { currentPalette, allBeads } = useColorPalette();
+  const { allBeads, recentColors, addToRecent } = useColorPalette();
 
   const paramSize = searchParams.get('size');
   const initialSize = paramSize ? parseInt(paramSize) : 50;
@@ -48,9 +49,10 @@ const DesktopEditor: React.FC = () => {
   const [cursorPos, setCursorPos] = useState<{x: number, y: number} | null>(null);
 
   const [tool, setTool] = useState<Tool>('pen');
-  const [selectedColor, setSelectedColor] = useState<string>("");
+  const [selectedBead, setSelectedBead] = useState<BeadColor | null>(null);
   const [showGrid, setShowGrid] = useState(true);
   const [showNumbers, setShowNumbers] = useState(false);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   
   const rulerCanvasRef = useRef<HTMLCanvasElement>(null);
   const mainContainerRef = useRef<HTMLDivElement>(null);
@@ -65,11 +67,14 @@ const DesktopEditor: React.FC = () => {
   
   const autoSaveRef = useRef({ grid, title, bounds, isFreeMode, offset, scale });
 
+  // Init selected color
   useEffect(() => {
-    if (currentPalette.length > 0 && !selectedColor) {
-      setSelectedColor(currentPalette[0].id);
+    if (!selectedBead) {
+      // Default to Black or first bead
+      const defaultBead = allBeads.find(b => b.code === 'B09' || b.hex === '#000000') || allBeads[0];
+      if (defaultBead) setSelectedBead(defaultBead);
     }
-  }, [currentPalette, selectedColor]);
+  }, [allBeads]);
 
   useEffect(() => {
     if (id && id !== 'new' && id !== 'imported') {
@@ -139,6 +144,7 @@ const DesktopEditor: React.FC = () => {
     }
   }, [isRenaming]);
 
+  // Rulers Logic (Same as before)
   useEffect(() => {
     const canvas = rulerCanvasRef.current;
     const container = mainContainerRef.current;
@@ -291,7 +297,6 @@ const DesktopEditor: React.FC = () => {
 
   const handleSave = (silent = false) => {
     setSaveStatus('saving');
-    
     const currentData = autoSaveRef.current;
     let currentId = draftIdRef.current;
     if (!currentId) {
@@ -366,6 +371,9 @@ const DesktopEditor: React.FC = () => {
   };
 
   const handleExport = () => {
+     // Save before export
+     handleSave(true);
+     
      const width = bounds.maxX - bounds.minX;
      const height = bounds.maxY - bounds.minY;
      
@@ -375,7 +383,10 @@ const DesktopEditor: React.FC = () => {
          normalizedGrid[`${x - bounds.minX},${y - bounds.minY}`] = val as string;
      });
 
-    navigate('/preview/custom', {
+    // Use stable ID for export URL
+    const targetId = draftIdRef.current || 'custom';
+
+    navigate(`/preview/${targetId}`, {
       state: {
         grid: normalizedGrid,
         width,
@@ -424,42 +435,56 @@ const DesktopEditor: React.FC = () => {
     const gridPixelY = (relativeY - offset.y) / scale;
     
     return {
-        x: Math.floor(gridPixelX / CELL_SIZE),
-        y: Math.floor(gridPixelY / CELL_SIZE)
+        x: Math.floor(gridPixelX / CELL_SIZE) + bounds.minX,
+        y: Math.floor(gridPixelY / CELL_SIZE) + bounds.minY
     };
   };
 
   const handleCellAction = (x: number, y: number) => {
-    if (tool === 'move') return;
+    if (tool === 'move' || !selectedBead) return;
 
     if (!isFreeMode) {
-        if (x < 0 || y < 0 || x >= bounds.maxX || y >= bounds.maxY) return;
+        if (x < bounds.minX || y < bounds.minY || x >= bounds.maxX || y >= bounds.maxY) return;
     } else {
+        // Free Mode Expansion Logic with Offset Compensation
         let newMinX = bounds.minX;
         let newMaxX = bounds.maxX;
         let newMinY = bounds.minY;
         let newMaxY = bounds.maxY;
         let changed = false;
+        
+        let addedLeft = 0;
+        let addedTop = 0;
+        const EXPAND_CHUNK = 20;
 
         if (x < bounds.minX + 5) {
-            newMinX = bounds.minX - 20;
+            newMinX = bounds.minX - EXPAND_CHUNK;
+            addedLeft = EXPAND_CHUNK;
             changed = true;
         }
         if (x >= bounds.maxX - 5) {
-            newMaxX = bounds.maxX + 20;
+            newMaxX = bounds.maxX + EXPAND_CHUNK;
             changed = true;
         }
         if (y < bounds.minY + 5) {
-            newMinY = bounds.minY - 20;
+            newMinY = bounds.minY - EXPAND_CHUNK;
+            addedTop = EXPAND_CHUNK;
             changed = true;
         }
         if (y >= bounds.maxY - 5) {
-            newMaxY = bounds.maxY + 20;
+            newMaxY = bounds.maxY + EXPAND_CHUNK;
             changed = true;
         }
 
         if (changed) {
             setBounds({ minX: newMinX, maxX: newMaxX, minY: newMinY, maxY: newMaxY });
+            // Counter-Offset Logic to prevent visual jumping
+            if (addedLeft > 0 || addedTop > 0) {
+                setOffset(prev => ({
+                    x: prev.x - (addedLeft * CELL_SIZE * scale),
+                    y: prev.y - (addedTop * CELL_SIZE * scale)
+                }));
+            }
         }
     }
 
@@ -472,7 +497,7 @@ const DesktopEditor: React.FC = () => {
     const newGrid = { ...grid };
 
     if (tool === 'pen') {
-      newGrid[key] = selectedColor;
+      newGrid[key] = selectedBead.id;
       setGrid(newGrid);
     } else if (tool === 'eraser') {
       delete newGrid[key];
@@ -480,13 +505,17 @@ const DesktopEditor: React.FC = () => {
     } else if (tool === 'picker') {
       const colorId = grid[key];
       if (colorId) {
-        setSelectedColor(colorId);
-        changeTool('pen');
+        const found = allBeads.find(b => b.id === colorId);
+        if (found) {
+            setSelectedBead(found);
+            addToRecent(found);
+            changeTool('pen');
+        }
       }
       isDrawing.current = false;
     } else if (tool === 'fill') {
       const targetColor = grid[key];
-      if (targetColor === selectedColor) return;
+      if (targetColor === selectedBead.id) return;
       
       const queue = [[x, y]];
       const visited = new Set([key]);
@@ -497,23 +526,19 @@ const DesktopEditor: React.FC = () => {
       while (queue.length > 0 && safetyCount < MAX_FILL) {
         const [cx, cy] = queue.shift()!;
         const cKey = `${cx},${cy}`;
-        newGrid[cKey] = selectedColor;
+        newGrid[cKey] = selectedBead.id;
         safetyCount++;
 
         const neighbors = [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]];
         for (const [nx, ny] of neighbors) {
            const nKey = `${nx},${ny}`;
-           
            if (!isFreeMode) {
-              if (nx < 0 || ny < 0 || nx >= bounds.maxX || ny >= bounds.maxY) continue;
+              if (nx < bounds.minX || ny < bounds.minY || nx >= bounds.maxX || ny >= bounds.maxY) continue;
            }
 
            if (!visited.has(nKey)) {
              if (targetColor === undefined) {
-                 if (!grid[nKey]) {
-                     visited.add(nKey);
-                     queue.push([nx, ny]);
-                 }
+                 if (!grid[nKey]) { visited.add(nKey); queue.push([nx, ny]); }
              } else if (grid[nKey] === targetColor) {
                  visited.add(nKey);
                  queue.push([nx, ny]);
@@ -561,63 +586,92 @@ const DesktopEditor: React.FC = () => {
       }
   };
 
+  const handleColorSelect = (color: BeadColor) => {
+      setSelectedBead(color);
+      addToRecent(color);
+      setIsPaletteOpen(false);
+      setTool('pen');
+  };
+
   return (
     <div className="flex h-screen w-full bg-slate-50 overflow-hidden select-none">
+       {/* Left Sidebar - Color Control */}
        <div className="w-72 bg-white border-r border-slate-200 flex flex-col shrink-0 z-20 shadow-sm">
-          <div className="p-4 border-b border-slate-100">
-             <div className="flex items-center gap-2 mb-2">
-                <button onClick={() => navigate(-1)} className="hover:bg-slate-100 p-1 rounded-full text-slate-500">
-                   <span className="material-symbols-outlined">arrow_back</span>
-                </button>
-                {isRenaming ? (
-                  <input 
-                    ref={titleInputRef}
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    onBlur={handleRename}
-                    onKeyDown={(e) => e.key === 'Enter' && handleRename()}
-                    className="font-bold text-gray-900 bg-slate-100 px-2 py-0.5 rounded w-full outline-none"
-                    autoFocus
-                  />
-                ) : (
-                  <h1 
-                    onClick={() => setIsRenaming(true)}
-                    className="font-bold text-gray-900 truncate cursor-text hover:bg-slate-50 px-2 py-0.5 rounded"
-                  >
-                    {title}
-                  </h1>
-                )}
+          {/* Header/Back */}
+          <div className="p-4 border-b border-slate-100 flex items-center gap-2">
+             <button onClick={() => navigate('/create')} className="hover:bg-slate-100 p-1 rounded-full text-slate-500">
+                <span className="material-symbols-outlined">arrow_back</span>
+             </button>
+             {isRenaming ? (
+               <input 
+                 ref={titleInputRef}
+                 value={title}
+                 onChange={(e) => setTitle(e.target.value)}
+                 onBlur={handleRename}
+                 onKeyDown={(e) => e.key === 'Enter' && handleRename()}
+                 className="font-bold text-gray-900 bg-slate-100 px-2 py-0.5 rounded w-full outline-none"
+                 autoFocus
+               />
+             ) : (
+               <h1 
+                 onClick={() => setIsRenaming(true)}
+                 className="font-bold text-gray-900 truncate cursor-text hover:bg-slate-50 px-2 py-0.5 rounded"
+               >
+                 {title}
+               </h1>
+             )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar">
+             {/* Current Color Details */}
+             <div className="p-6 flex flex-col items-center border-b border-slate-100 bg-slate-50/50">
+                 <div className="w-24 h-24 rounded-full shadow-md border-4 border-white mb-3 relative overflow-hidden" style={{ backgroundColor: selectedBead?.hex }}>
+                    <div className="absolute inset-0 bg-gradient-to-tr from-black/10 to-transparent pointer-events-none"></div>
+                 </div>
+                 <h2 className="text-2xl font-black text-slate-800">{selectedBead?.code}</h2>
+                 <p className="text-xs text-slate-500 font-medium mt-1">{selectedBead?.brand} • {selectedBead?.hex}</p>
              </div>
-             <div className="flex items-center justify-between text-xs text-slate-500 px-1">
-                 <span>{bounds.maxX - bounds.minX}x{bounds.maxY - bounds.minY}</span>
-                 <span className={`flex items-center gap-1 ${saveStatus === 'saved' ? 'text-green-500' : ''}`}>
-                    {saveStatus === 'saving' && '保存中...'}
-                    {saveStatus === 'saved' && '已保存'}
-                    {saveStatus === 'idle' && '自动保存'}
-                 </span>
+
+             {/* Actions */}
+             <div className="p-4">
+                 <button 
+                   onClick={() => setIsPaletteOpen(true)}
+                   className="w-full py-3 px-4 bg-white border-2 border-slate-100 rounded-xl shadow-sm text-slate-700 font-bold hover:border-primary hover:text-primary transition-all flex items-center justify-center gap-2"
+                 >
+                    <span className="material-symbols-outlined">palette</span>
+                    打开调色板
+                 </button>
+             </div>
+
+             {/* Recent Colors */}
+             <div className="px-4 pb-4">
+                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 px-1">最近使用</h3>
+                 <div className="grid grid-cols-5 gap-2">
+                     {recentColors.slice(0, 20).map(color => (
+                         <button
+                           key={color.id}
+                           onClick={() => { setSelectedBead(color); setTool('pen'); }}
+                           className={`aspect-square rounded-lg border border-slate-200 relative group transition-transform hover:scale-105 ${selectedBead?.id === color.id ? 'ring-2 ring-primary ring-offset-2 z-10' : ''}`}
+                           style={{ backgroundColor: color.hex }}
+                           title={`${color.code}`}
+                         >
+                         </button>
+                     ))}
+                 </div>
              </div>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-             <div className="grid grid-cols-5 gap-2">
-                 {currentPalette.map(color => (
-                     <button
-                       key={color.id}
-                       onClick={() => { setSelectedColor(color.id); setTool('pen'); }}
-                       className={`aspect-square rounded-full border border-slate-200 relative group transition-transform hover:scale-105 ${selectedColor === color.id ? 'ring-2 ring-primary ring-offset-2 z-10' : ''}`}
-                       style={{ backgroundColor: color.hex }}
-                       title={`${color.code} ${color.name}`}
-                     >
-                       {selectedColor === color.id && (
-                          <span className="material-symbols-outlined text-[12px] text-white/80 absolute inset-0 flex items-center justify-center drop-shadow-md">check</span>
-                       )}
-                     </button>
-                 ))}
-             </div>
+          <div className="p-2 border-t border-slate-100 text-center text-[10px] text-slate-400">
+             <span>{bounds.maxX - bounds.minX}x{bounds.maxY - bounds.minY}</span>
+             <span className={`ml-2 ${saveStatus === 'saved' ? 'text-green-500' : ''}`}>
+                {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : ''}
+             </span>
           </div>
        </div>
 
+       {/* Main Editor Area */}
        <div className="flex-1 flex flex-col relative overflow-hidden">
+          {/* Top Toolbar */}
           <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-10 shadow-sm">
               <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
                   <button onClick={() => changeTool('move')} className={`p-2 rounded-md transition-colors ${tool === 'move' ? 'bg-white shadow text-primary' : 'text-slate-500 hover:text-slate-700'}`} title="移动画布 (Space)">
@@ -654,6 +708,12 @@ const DesktopEditor: React.FC = () => {
                   <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className="p-2 rounded-full hover:bg-slate-100 disabled:opacity-30 transition-colors text-slate-600">
                       <span className="material-symbols-outlined">redo</span>
                   </button>
+                  
+                  {/* Save Button */}
+                  <button onClick={() => handleSave(false)} className={`p-2 rounded-full hover:bg-slate-100 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`} title="保存">
+                      <span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
+                  </button>
+
                   <div className="w-[1px] h-6 bg-slate-200 mx-2"></div>
                   <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600 transition-colors shadow-sm shadow-blue-500/30">
                       <span className="material-symbols-outlined text-[20px]">ios_share</span>
@@ -736,6 +796,12 @@ const DesktopEditor: React.FC = () => {
              </div>
           </div>
        </div>
+
+       <PaletteModal 
+         isOpen={isPaletteOpen} 
+         onClose={() => setIsPaletteOpen(false)}
+         onSelect={handleColorSelect}
+       />
     </div>
   );
 };

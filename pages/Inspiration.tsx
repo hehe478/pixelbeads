@@ -6,7 +6,7 @@ import PaletteModal from '../components/PaletteModal';
 
 const Inspiration: React.FC = () => {
   const navigate = useNavigate();
-  const { availableBrands, availableSets, paletteConfig, setBrand, setSet } = useColorPalette();
+  const { availableBrands, availableSets, paletteConfig, setBrand, setSet, addToRecent } = useColorPalette();
   const [isPaletteModalOpen, setIsPaletteModalOpen] = useState(false);
 
   return (
@@ -129,7 +129,14 @@ const Inspiration: React.FC = () => {
         </div>
       </div>
 
-      <PaletteModal isOpen={isPaletteModalOpen} onClose={() => setIsPaletteModalOpen(false)} />
+      <PaletteModal 
+        isOpen={isPaletteModalOpen} 
+        onClose={() => setIsPaletteModalOpen(false)}
+        onSelect={(color) => {
+          addToRecent(color);
+          setIsPaletteModalOpen(false);
+        }}
+      />
     </div>
   );
 };
