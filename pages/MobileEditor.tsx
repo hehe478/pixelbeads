@@ -2,12 +2,12 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation, useSearchParams, useParams } from 'react-router-dom';
 import { Draft, BeadColor } from '../types';
 import { useColorPalette } from '../context/ColorContext';
-import { getTextColor, hexToRgb, rgbToLab, deltaE } from '../utils/colors';
+import { getTextColor, hexToRgb, rgbToLab, deltaE, denoiseGrid } from '../utils/colors';
 import PaletteModal from '../components/PaletteModal';
 
 type Tool = 'pen' | 'eraser' | 'fill' | 'picker' | 'move';
 
-// Memoized Grid View to prevent expensive re-renders during zoom/pan
+// Memoized Grid View using Canvas for high performance rendering
 const GridView = React.memo(({ 
   grid, 
   bounds, 
@@ -21,39 +21,59 @@ const GridView = React.memo(({
   showNumbers: boolean,
   cellSize: number
 }) => {
-  return (
-    <>
-      {Object.entries(grid).map(([key, colorId]) => {
-          const [x, y] = key.split(',').map(Number);
-          if (x < bounds.minX || x >= bounds.maxX || y < bounds.minY || y >= bounds.maxY) return null;
-          
-          const color = allBeadsMap[colorId];
-          if (!color) return null;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-          return (
-              <div 
-                key={key}
-                className="absolute flex items-center justify-center"
-                style={{
-                    left: (x - bounds.minX) * cellSize,
-                    top: (y - bounds.minY) * cellSize,
-                    width: cellSize,
-                    height: cellSize,
-                    backgroundColor: color.hex
-                }}
-              >
-                 {showNumbers && (
-                    <span 
-                      className="text-[8px] font-bold select-none pointer-events-none"
-                      style={{ color: getTextColor(color.hex), fontSize: '8px' }}
-                    >
-                      {color.code}
-                    </span>
-                 )}
-              </div>
-          )
-      })}
-    </>
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Clear canvas
+    const width = (bounds.maxX - bounds.minX) * cellSize;
+    const height = (bounds.maxY - bounds.minY) * cellSize;
+    ctx.clearRect(0, 0, width, height);
+
+    // Set font for numbers once
+    if (showNumbers) {
+        ctx.font = 'bold 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+    }
+
+    Object.entries(grid).forEach(([key, colorId]) => {
+        const [x, y] = key.split(',').map(Number);
+        
+        // Skip rendering if out of current bounds
+        if (x < bounds.minX || x >= bounds.maxX || y < bounds.minY || y >= bounds.maxY) return;
+        
+        const color = allBeadsMap[colorId];
+        if (!color) return;
+
+        const posX = (x - bounds.minX) * cellSize;
+        const posY = (y - bounds.minY) * cellSize;
+
+        // Draw pixel
+        ctx.fillStyle = color.hex;
+        ctx.fillRect(posX, posY, cellSize, cellSize);
+
+        // Draw number code if enabled
+        if (showNumbers) {
+            ctx.fillStyle = getTextColor(color.hex);
+            // Center text in cell
+            ctx.fillText(color.code, posX + cellSize/2, posY + cellSize/2);
+        }
+    });
+
+  }, [grid, bounds, allBeadsMap, showNumbers, cellSize]);
+
+  return (
+    <canvas 
+        ref={canvasRef}
+        width={(bounds.maxX - bounds.minX) * cellSize}
+        height={(bounds.maxY - bounds.minY) * cellSize}
+        className="absolute top-0 left-0 pointer-events-none"
+    />
   );
 });
 
@@ -113,6 +133,18 @@ const MobileEditor: React.FC = () => {
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
+  
+  // Export Settings
+  const [reduceNoise, setReduceNoise] = useState(false);
+  const [detailProtection, setDetailProtection] = useState(30); // Default to 30
+
+  // Conversion States
+  const [showConvertConfirm, setShowConvertConfirm] = useState(false);
+  const [showConvertSuccess, setShowConvertSuccess] = useState(false);
+
+  // Bead Mode State
+  const [isBeadMode, setIsBeadMode] = useState(false);
+  const [timerSeconds, setTimerSeconds] = useState(0);
 
   // History
   const [history, setHistory] = useState<{[key: string]: string}[]>([{}]);
@@ -179,9 +211,29 @@ const MobileEditor: React.FC = () => {
   }, [id]);
 
   useEffect(() => {
-    const timer = setInterval(() => handleSave(true), 10000); 
+    const timer = setInterval(() => {
+        if (!isBeadMode) handleSave(true);
+    }, 10000); 
     return () => clearInterval(timer);
-  }, []);
+  }, [isBeadMode]);
+
+  // Timer Effect
+  useEffect(() => {
+    let interval: any;
+    if (isBeadMode) {
+        interval = setInterval(() => {
+            setTimerSeconds(prev => prev + 1);
+        }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isBeadMode]);
+
+  const formatTime = (totalSeconds: number) => {
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
 
   useEffect(() => {
     const canvas = rulerCanvasRef.current;
@@ -330,12 +382,104 @@ const MobileEditor: React.FC = () => {
 
   const handleExportClick = () => { handleSave(true); setShowExportModal(true); };
 
+  const performConversion = () => {
+      if (!currentPalette || currentPalette.length === 0) return;
+      setIsConverting(true);
+      setShowConvertConfirm(false);
+
+      setTimeout(() => {
+          const paletteCache = currentPalette.map(bead => {
+              const rgb = hexToRgb(bead.hex);
+              return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) };
+          });
+
+          const newGrid: {[key: string]: string} = {};
+          Object.entries(grid).forEach(([key, colorId]) => {
+              const originalBead = allBeadsMap[colorId];
+              if (originalBead) {
+                  const rgb = hexToRgb(originalBead.hex);
+                  const currentLab = rgbToLab(rgb.r, rgb.g, rgb.b);
+                  
+                  let minDistance = Infinity;
+                  let closestBead = paletteCache[0];
+                  
+                  for (const p of paletteCache) {
+                      const dist = deltaE(currentLab, p.lab);
+                      if (dist < minDistance) {
+                          minDistance = dist;
+                          closestBead = p;
+                      }
+                  }
+                  newGrid[key] = closestBead.id;
+              }
+          });
+
+          // Generate Draft Copy
+          const width = bounds.maxX - bounds.minX;
+          const height = bounds.maxY - bounds.minY;
+          const canvas = document.createElement('canvas');
+          const thumbSize = 5;
+          canvas.width = Math.max(1, width * thumbSize);
+          canvas.height = Math.max(1, height * thumbSize);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            Object.entries(newGrid).forEach(([key, colorId]) => {
+              const [x, y] = key.split(',').map(Number);
+              const drawX = x - bounds.minX;
+              const drawY = y - bounds.minY;
+              const color = allBeadsMap[colorId];
+              if (color) {
+                ctx.fillStyle = color.hex;
+                ctx.fillRect(drawX * thumbSize, drawY * thumbSize, thumbSize, thumbSize);
+              }
+            });
+          }
+
+          const newDraft: Draft = {
+              id: Date.now().toString(),
+              title: `${title} (转换版)`,
+              grid: newGrid,
+              width, height,
+              minX: bounds.minX,
+              minY: bounds.minY,
+              isFreeMode,
+              lastModified: Date.now(),
+              thumbnail: canvas.toDataURL('image/png', 0.5)
+          };
+
+          try {
+              const drafts = JSON.parse(localStorage.getItem('pixelbead_drafts') || '[]');
+              drafts.unshift(newDraft);
+              localStorage.setItem('pixelbead_drafts', JSON.stringify(drafts));
+              setShowConvertSuccess(true);
+          } catch (e) {
+              alert('保存副本失败，请检查存储空间');
+          } finally {
+              setIsConverting(false);
+          }
+      }, 100);
+  };
+
   const processExport = (shouldMapColors: boolean) => {
      setIsConverting(true);
      setTimeout(() => {
         const width = bounds.maxX - bounds.minX;
         const height = bounds.maxY - bounds.minY;
+        
+        // 1. Prepare base grid (optionally denoised)
+        let processedGrid = { ...grid };
+        if (reduceNoise) {
+            // Updated to use the adjustable threshold
+            // protection 100 => threshold 0 (Keep all)
+            // protection 0 => threshold 100 (Keep only huge contrasts)
+            const threshold = 100 - detailProtection;
+            processedGrid = denoiseGrid(processedGrid, bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, allBeadsMap, threshold);
+        }
+
         let exportGrid: {[key: string]: string} = {};
+        
         if (shouldMapColors) {
             if (!currentPalette || currentPalette.length === 0) {
                 alert("当前选择的套装为空，请先在灵感页设置套装。");
@@ -347,8 +491,7 @@ const MobileEditor: React.FC = () => {
                 return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) };
             });
             
-            // Iterate directly over grid items for O(N) performance instead of O(W*H)
-            Object.entries(grid).forEach(([key, colorId]: [string, string]) => {
+            Object.entries(processedGrid).forEach(([key, colorId]: [string, string]) => {
                 const [gx, gy] = key.split(',').map(Number);
                 const x = gx - bounds.minX;
                 const y = gy - bounds.minY;
@@ -375,7 +518,7 @@ const MobileEditor: React.FC = () => {
                 }
             });
         } else {
-            Object.entries(grid).forEach(([key, val]: [string, string]) => {
+            Object.entries(processedGrid).forEach(([key, val]: [string, string]) => {
                 const [x, y] = key.split(',').map(Number);
                 exportGrid[`${x - bounds.minX},${y - bounds.minY}`] = val;
             });
@@ -428,7 +571,8 @@ const MobileEditor: React.FC = () => {
          lastPinchRef.current = { distance: dist, center: { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 } };
          return;
      }
-     if (tool === 'move') {
+     // In Bead Mode, standard touch is treated as move/pan
+     if (tool === 'move' || isBeadMode) {
          isDragging.current = true;
          lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
          return;
@@ -460,14 +604,14 @@ const MobileEditor: React.FC = () => {
           lastPinchRef.current = { distance: currentDist, center: currentCenter };
           return;
       }
-      if (tool === 'move' && isDragging.current && e.touches.length === 1) {
+      if ((tool === 'move' || isBeadMode) && isDragging.current && e.touches.length === 1) {
           const dx = e.touches[0].clientX - lastTouchPos.current.x;
           const dy = e.touches[0].clientY - lastTouchPos.current.y;
           setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
           lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
           return;
       }
-      if (tool !== 'move' && !isDragging.current && !isPinching.current && e.touches.length === 1) {
+      if (tool !== 'move' && !isDragging.current && !isPinching.current && e.touches.length === 1 && !isBeadMode) {
           const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
           if (isDrawing.current && (tool === 'pen' || tool === 'eraser')) handleCellAction(x, y);
       }
@@ -475,28 +619,61 @@ const MobileEditor: React.FC = () => {
   
   const handleTouchEnd = () => {
       isDragging.current = false; isPinching.current = false; lastPinchRef.current = null;
-      if (isDrawing.current) commitHistory(grid);
+      if (isDrawing.current && !isBeadMode) commitHistory(grid);
   };
 
   const handleCellAction = (x: number, y: number) => {
-    if (tool === 'move' || !selectedBead) return;
-    if (!isFreeMode) { if (x < bounds.minX || y < bounds.minY || x >= bounds.maxX || y >= bounds.maxY) return; }
-    else {
-        let newMinX = bounds.minX; let newMaxX = bounds.maxX;
-        let newMinY = bounds.minY; let newMaxY = bounds.maxY;
-        let changed = false; let addedLeft = 0; let addedTop = 0;
-        const EXPAND_CHUNK = 20;
-        if (x < bounds.minX + 5) { newMinX = bounds.minX - EXPAND_CHUNK; addedLeft = EXPAND_CHUNK; changed = true; }
-        if (x >= bounds.maxX - 5) { newMaxX = bounds.maxX + EXPAND_CHUNK; changed = true; }
-        if (y < bounds.minY + 5) { newMinY = bounds.minY - EXPAND_CHUNK; addedTop = EXPAND_CHUNK; changed = true; }
-        if (y >= bounds.maxY - 5) { newMaxY = bounds.maxY + EXPAND_CHUNK; changed = true; }
+    if (tool === 'move' || !selectedBead || isBeadMode) return;
+    
+    // Auto-expand logic for Free Mode
+    if (isFreeMode) {
+        let newMinX = bounds.minX;
+        let newMaxX = bounds.maxX;
+        let newMinY = bounds.minY;
+        let newMaxY = bounds.maxY;
+        let changed = false;
+        let addedLeft = 0;
+        let addedTop = 0;
+        const EXPAND_CHUNK = 10;
+
+        // Expand Left (Negative X)
+        if (x < bounds.minX + 2) { 
+            newMinX = bounds.minX - EXPAND_CHUNK; 
+            addedLeft = EXPAND_CHUNK; 
+            changed = true; 
+        }
+        // Expand Right (Positive X)
+        if (x >= bounds.maxX - 2) { 
+            newMaxX = bounds.maxX + EXPAND_CHUNK; 
+            changed = true; 
+        }
+        // Expand Top (Negative Y)
+        if (y < bounds.minY + 2) { 
+            newMinY = bounds.minY - EXPAND_CHUNK; 
+            addedTop = EXPAND_CHUNK; 
+            changed = true; 
+        }
+        // Expand Bottom (Positive Y)
+        if (y >= bounds.maxY - 2) { 
+            newMaxY = bounds.maxY + EXPAND_CHUNK; 
+            changed = true; 
+        }
+
         if (changed) {
             setBounds({ minX: newMinX, maxX: newMaxX, minY: newMinY, maxY: newMaxY });
+            // Seamless expansion: Adjust offset to counteract the bounds change
             if (addedLeft > 0 || addedTop > 0) {
-                setOffset(prev => ({ x: prev.x - (addedLeft * CELL_SIZE * scale), y: prev.y - (addedTop * CELL_SIZE * scale) }));
+                setOffset(prev => ({ 
+                    x: prev.x - (addedLeft * CELL_SIZE * scale), 
+                    y: prev.y - (addedTop * CELL_SIZE * scale) 
+                }));
             }
         }
+    } else {
+        // Fixed Mode: Boundary Check
+        if (x < bounds.minX || y < bounds.minY || x >= bounds.maxX || y >= bounds.maxY) return;
     }
+
     if (!isDrawing.current) { isDrawing.current = true; startStrokeGrid.current = { ...grid }; }
     const key = `${x},${y}`; 
     const newGrid: { [key: string]: string } = { ...grid };
@@ -549,44 +726,129 @@ const MobileEditor: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden select-none">
-       <div className="h-14 bg-white shadow-sm flex items-center justify-between px-4 z-20 shrink-0">
-           <button onClick={() => navigate('/create')} className="p-2 -ml-2 text-slate-600"><span className="material-symbols-outlined">arrow_back</span></button>
-           <div className="flex gap-2">
-                <button onClick={() => setShowGrid(!showGrid)} className={`p-2 transition-colors ${showGrid ? 'text-primary' : 'text-slate-600'}`}><span className="material-symbols-outlined text-[20px]">grid_4x4</span></button>
-                <button onClick={() => setShowNumbers(!showNumbers)} className={`p-2 transition-colors ${showNumbers ? 'text-primary' : 'text-slate-600'}`}><span className="material-symbols-outlined text-[20px]">123</span></button>
-                <button onClick={handleUndo} disabled={historyIndex === 0} className="p-2 text-slate-600 disabled:opacity-30"><span className="material-symbols-outlined">undo</span></button>
-                <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className="p-2 text-slate-600 disabled:opacity-30"><span className="material-symbols-outlined">redo</span></button>
-                <button onClick={() => handleSave(false)} className={`p-2 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
-                <button onClick={handleExportClick} className="p-2 text-slate-600"><span className="material-symbols-outlined">ios_share</span></button>
-           </div>
-       </div>
+       {/* Top Bar - Normal Mode */}
+       {!isBeadMode && (
+         <div className="h-14 bg-white shadow-sm flex items-center justify-between px-4 z-20 shrink-0">
+             <button onClick={() => navigate('/create')} className="p-2 -ml-2 text-slate-600"><span className="material-symbols-outlined">arrow_back</span></button>
+             <div className="flex gap-2">
+                  <button onClick={() => setShowGrid(!showGrid)} className={`p-2 transition-colors ${showGrid ? 'text-primary' : 'text-slate-600'}`}><span className="material-symbols-outlined text-[20px]">grid_4x4</span></button>
+                  <button onClick={() => setShowNumbers(!showNumbers)} className={`p-2 transition-colors ${showNumbers ? 'text-primary' : 'text-slate-600'}`}><span className="material-symbols-outlined text-[20px]">123</span></button>
+                  <button onClick={handleUndo} disabled={historyIndex === 0} className="p-2 text-slate-600 disabled:opacity-30"><span className="material-symbols-outlined">undo</span></button>
+                  <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className="p-2 text-slate-600 disabled:opacity-30"><span className="material-symbols-outlined">redo</span></button>
+                  <button onClick={() => setShowConvertConfirm(true)} className="p-2 text-slate-600 hover:text-purple-600 hover:bg-purple-50 rounded-full" title="转换色彩"><span className="material-symbols-outlined text-[20px]">auto_fix_high</span></button>
+                  <button onClick={() => handleSave(false)} className={`p-2 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
+                  <button onClick={() => { setIsBeadMode(true); setTimerSeconds(0); }} className="p-2 text-primary hover:bg-blue-50 rounded-full" title="拼豆模式"><span className="material-symbols-outlined text-[20px]">spa</span></button>
+                  <button onClick={handleExportClick} className="p-2 text-slate-600"><span className="material-symbols-outlined">ios_share</span></button>
+             </div>
+         </div>
+       )}
+
+       {/* Top Bar - Bead Mode */}
+       {isBeadMode && (
+         <div className="h-16 bg-white/90 backdrop-blur shadow-sm flex items-center justify-between px-6 z-20 shrink-0 border-b border-primary/20">
+             <div className="flex items-center gap-3">
+                 <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white shadow-lg shadow-primary/30">
+                     <span className="material-symbols-outlined animate-pulse">spa</span>
+                 </div>
+                 <div>
+                     <div className="text-[10px] uppercase font-bold text-primary tracking-wider">拼豆计时</div>
+                     <div className="font-mono text-2xl font-bold text-gray-800 leading-none">{formatTime(timerSeconds)}</div>
+                 </div>
+             </div>
+             <button 
+                onClick={() => setIsBeadMode(false)} 
+                className="bg-slate-100 text-slate-600 px-4 py-2 rounded-full font-bold text-sm hover:bg-slate-200 transition-colors flex items-center gap-1"
+             >
+                <span className="material-symbols-outlined text-lg">stop</span>
+                结束
+             </button>
+         </div>
+       )}
 
        <div ref={containerRef} className="flex-1 relative overflow-hidden bg-slate-200 touch-none cursor-crosshair" style={{ touchAction: 'none' }} onWheel={handleWheel} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
           <canvas ref={rulerCanvasRef} className="absolute inset-0 pointer-events-none z-10" />
           <div className="absolute origin-top-left" style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`, willChange: 'transform' }}>
-              <div className="bg-white shadow-xl relative" style={{ width: (bounds.maxX - bounds.minX) * CELL_SIZE, height: (bounds.maxY - bounds.minY) * CELL_SIZE }}>
-                  {showGrid && <div className="absolute inset-0 pointer-events-none opacity-30" style={{ backgroundImage: `linear-gradient(to right, #ccc 1px, transparent 1px), linear-gradient(to bottom, #ccc 1px, transparent 1px)`, backgroundSize: `${CELL_SIZE}px ${CELL_SIZE}px` }} />}
+              <div 
+                className="shadow-xl relative" 
+                style={{ 
+                    width: (bounds.maxX - bounds.minX) * CELL_SIZE, 
+                    height: (bounds.maxY - bounds.minY) * CELL_SIZE,
+                    backgroundColor: '#ffffff',
+                    backgroundImage: `linear-gradient(45deg, #e2e8f0 25%, transparent 25%, transparent 75%, #e2e8f0 75%), linear-gradient(45deg, #e2e8f0 25%, transparent 25%, transparent 75%, #e2e8f0 75%)`,
+                    backgroundPosition: '0 0, 8px 8px',
+                    backgroundSize: '16px 16px'
+                }}
+              >
+                  {showGrid && <div className="absolute inset-0 pointer-events-none z-20 opacity-25" style={{ backgroundImage: `linear-gradient(to right, #000000 1px, transparent 1px), linear-gradient(to bottom, #000000 1px, transparent 1px)`, backgroundSize: `${CELL_SIZE}px ${CELL_SIZE}px` }} />}
                   <GridView grid={grid} bounds={bounds} allBeadsMap={allBeadsMap} showNumbers={showNumbers} cellSize={CELL_SIZE} />
               </div>
           </div>
        </div>
 
-       <div className="bg-white border-t border-slate-200 shrink-0 h-20 pb-safe flex items-center justify-between px-6 z-30">
-           <div className="flex flex-col items-center gap-1">
-               <button onClick={() => setIsPaletteOpen(true)} className="w-10 h-10 rounded-full shadow-md border-2 border-white ring-2 ring-gray-200 relative overflow-hidden" style={{ backgroundColor: selectedBead?.hex || '#ccc' }}><div className="absolute inset-0 bg-gradient-to-tr from-black/10 to-transparent pointer-events-none"></div></button>
-               <span className="text-[10px] font-bold text-gray-500 max-w-[4rem] truncate">{selectedBead?.code || '选择'}</span>
+       {/* Bottom Toolbar - Only visible in Normal Mode */}
+       {!isBeadMode && (
+           <div className="bg-white border-t border-slate-200 shrink-0 h-20 pb-safe flex items-center justify-between px-6 z-30">
+               <div className="flex flex-col items-center gap-1">
+                   <button onClick={() => setIsPaletteOpen(true)} className="w-10 h-10 rounded-full shadow-md border-2 border-white ring-2 ring-gray-200 relative overflow-hidden" style={{ backgroundColor: selectedBead?.hex || '#ccc' }}><div className="absolute inset-0 bg-gradient-to-tr from-black/10 to-transparent pointer-events-none"></div></button>
+                   <span className="text-[10px] font-bold text-gray-500 max-w-[4rem] truncate">{selectedBead?.code || '选择'}</span>
+               </div>
+               <div className="w-[1px] h-8 bg-gray-200 mx-2"></div>
+               <div className="flex flex-1 justify-between text-slate-500 max-w-xs">
+                   <button onClick={() => setTool('move')} className={`flex flex-col items-center transition-colors ${tool === 'move' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'move' ? 'filled' : ''}`}>pan_tool_alt</span></button>
+                   <button onClick={() => setTool('pen')} className={`flex flex-col items-center transition-colors ${tool === 'pen' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'pen' ? 'filled' : ''}`}>edit</span></button>
+                   <button onClick={() => setTool('eraser')} className={`flex flex-col items-center transition-colors ${tool === 'eraser' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'eraser' ? 'filled' : ''}`}>ink_eraser</span></button>
+                   <button onClick={() => setTool('fill')} className={`flex flex-col items-center transition-colors ${tool === 'fill' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'fill' ? 'filled' : ''}`}>format_color_fill</span></button>
+                   <button onClick={() => setTool('picker')} className={`flex flex-col items-center transition-colors ${tool === 'picker' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'picker' ? 'filled' : ''}`}>colorize</span></button>
+               </div>
            </div>
-           <div className="w-[1px] h-8 bg-gray-200 mx-2"></div>
-           <div className="flex flex-1 justify-between text-slate-500 max-w-xs">
-               <button onClick={() => setTool('move')} className={`flex flex-col items-center transition-colors ${tool === 'move' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'move' ? 'filled' : ''}`}>pan_tool_alt</span></button>
-               <button onClick={() => setTool('pen')} className={`flex flex-col items-center transition-colors ${tool === 'pen' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'pen' ? 'filled' : ''}`}>edit</span></button>
-               <button onClick={() => setTool('eraser')} className={`flex flex-col items-center transition-colors ${tool === 'eraser' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'eraser' ? 'filled' : ''}`}>ink_eraser</span></button>
-               <button onClick={() => setTool('fill')} className={`flex flex-col items-center transition-colors ${tool === 'fill' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'fill' ? 'filled' : ''}`}>format_color_fill</span></button>
-               <button onClick={() => setTool('picker')} className={`flex flex-col items-center transition-colors ${tool === 'picker' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'picker' ? 'filled' : ''}`}>colorize</span></button>
-           </div>
-       </div>
+       )}
 
        <PaletteModal isOpen={isPaletteOpen} onClose={() => setIsPaletteOpen(false)} onSelect={(c) => { setSelectedBead(c); addToRecent(c); setTool('pen'); setIsPaletteOpen(false); }} />
+       
+       {/* Color Conversion Confirmation Modal */}
+       {showConvertConfirm && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
+            <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6">
+                <div className="flex flex-col items-center mb-4">
+                    <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center mb-3">
+                        <span className="material-symbols-outlined text-2xl">auto_fix_high</span>
+                    </div>
+                    <h3 className="font-bold text-lg text-gray-900 dark:text-white">转换色彩</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-1">
+                        是否将当前画作转换为 <span className="font-bold text-gray-800 dark:text-gray-200">{paletteConfig.brand} {paletteConfig.set === 'all' ? '全套' : paletteConfig.set === 'custom' ? '自定义' : `${paletteConfig.set}色`}</span> 套装的近似色？
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2 bg-gray-50 dark:bg-gray-800 px-3 py-1 rounded-lg">
+                        将自动生成一个新副本，原图不会被修改。
+                    </p>
+                </div>
+                <div className="flex gap-3">
+                    <button onClick={() => setShowConvertConfirm(false)} className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 font-bold text-gray-600 hover:bg-gray-50 transition-colors">取消</button>
+                    <button onClick={performConversion} disabled={isConverting} className="flex-1 py-2.5 rounded-xl bg-purple-600 text-white font-bold hover:bg-purple-700 shadow-lg shadow-purple-500/30 transition-colors flex items-center justify-center gap-2">
+                        {isConverting ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span> : '确认转换'}
+                    </button>
+                </div>
+            </div>
+         </div>
+       )}
+
+       {/* Success Modal */}
+       {showConvertSuccess && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
+            <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6 flex flex-col items-center">
+                <div className="w-16 h-16 rounded-full bg-green-100 text-green-500 flex items-center justify-center mb-4">
+                    <span className="material-symbols-outlined text-3xl">check_circle</span>
+                </div>
+                <h3 className="font-bold text-xl text-gray-900 dark:text-white">转换完毕！</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-2 mb-6">
+                    已生成副本，请到草稿箱查看。
+                </p>
+                <button onClick={() => setShowConvertSuccess(false)} className="w-full py-3 rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 font-bold hover:opacity-90 transition-opacity">
+                    知道了
+                </button>
+            </div>
+         </div>
+       )}
+
        {showExportModal && (
          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl p-6">
@@ -594,10 +856,49 @@ const MobileEditor: React.FC = () => {
                     <h3 className="font-bold text-lg text-gray-900 dark:text-white">导出选项</h3>
                     <button onClick={() => setShowExportModal(false)} className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"><span className="material-symbols-outlined text-gray-500">close</span></button>
                 </div>
+                
                 {isConverting ? (
-                    <div className="flex flex-col items-center justify-center py-8"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-3"></div><p className="text-sm text-gray-500">正在应用套装色彩 (CIELAB)...</p></div>
+                    <div className="flex flex-col items-center justify-center py-8"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-3"></div><p className="text-sm text-gray-500">正在生成预览...</p></div>
                 ) : (
                     <div className="space-y-4">
+                        {/* Noise Reduction Toggle & Slider */}
+                        <div className="flex flex-col p-4 bg-slate-50 dark:bg-[#1e1e30] rounded-xl border border-slate-100 dark:border-slate-700">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex flex-col">
+                                    <span className="font-bold text-gray-900 dark:text-white text-sm">优化杂色</span>
+                                    <span className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">自动去除孤立的单个像素</span>
+                                </div>
+                                <div 
+                                    onClick={() => setReduceNoise(!reduceNoise)}
+                                    className={`w-12 h-6 rounded-full flex items-center transition-colors duration-300 cursor-pointer px-1 ${reduceNoise ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'}`}
+                                >
+                                    <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 ${reduceNoise ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                                </div>
+                            </div>
+                            
+                            {/* Detail Protection Slider */}
+                            {reduceNoise && (
+                                <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600 animate-fade-in">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-xs font-bold text-gray-700 dark:text-gray-300">细节保护</span>
+                                        <span className="text-xs font-mono text-primary bg-primary/10 px-1.5 py-0.5 rounded">{detailProtection}%</span>
+                                    </div>
+                                    <input 
+                                        type="range" 
+                                        min="0" 
+                                        max="100" 
+                                        value={detailProtection} 
+                                        onChange={(e) => setDetailProtection(parseInt(e.target.value))}
+                                        className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-primary"
+                                    />
+                                    <div className="flex justify-between mt-1">
+                                        <span className="text-[10px] text-gray-400">更少细节 (强力去噪)</span>
+                                        <span className="text-[10px] text-gray-400">更多细节 (轻微去噪)</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
                         <button onClick={() => processExport(false)} className="w-full flex items-center p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#1e1e30] hover:bg-white dark:hover:bg-gray-800 hover:shadow-md transition-all group">
                             <div className="h-12 w-12 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400 group-hover:scale-110 transition-transform"><span className="material-symbols-outlined">palette</span></div>
                             <div className="ml-4 flex-1 text-left"><h4 className="font-bold text-gray-900 dark:text-white">原始色彩导出</h4><p className="text-xs text-gray-500 mt-1">保留绘制时使用的所有原始颜色</p></div>

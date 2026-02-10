@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Draft } from '../types';
 import { useColorPalette } from '../context/ColorContext';
@@ -39,6 +39,32 @@ const Create: React.FC = () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
+
+  // --- Logarithmic Slider Logic ---
+  // We map the slider range (0-100) to the width range (1 to originalWidth) using a logarithmic scale.
+  // Formula: width = min * (max/min)^(slider/100)
+  // Inverse: slider = 100 * log(width/min) / log(max/min)
+  
+  const minW = 1;
+  // Ensure maxW is at least minW + 1 to avoid division by zero or log(1)
+  const maxW = Math.max(minW + 1, originalDimensions.width);
+
+  const sliderValue = useMemo(() => {
+      if (targetWidth <= minW) return 0;
+      if (targetWidth >= maxW) return 100;
+      // Calculate slider position from target width
+      const val = (Math.log(targetWidth / minW) / Math.log(maxW / minW)) * 100;
+      return Math.min(100, Math.max(0, val));
+  }, [targetWidth, maxW]);
+
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = parseFloat(e.target.value);
+      // Calculate width from slider position
+      // Math.round to get integer pixel values
+      const newWidth = Math.round(minW * Math.pow(maxW / minW, val / 100));
+      setTargetWidth(Math.max(minW, Math.min(maxW, newWidth)));
+  };
+  // --------------------------------
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -396,15 +422,16 @@ const Create: React.FC = () => {
                   </div>
                   <input 
                     type="range" 
-                    min="1" 
-                    max={originalDimensions.width} 
-                    value={targetWidth}
-                    onChange={(e) => setTargetWidth(parseInt(e.target.value))}
+                    min="0" 
+                    max="100" 
+                    step="0.1"
+                    value={sliderValue}
+                    onChange={handleSliderChange}
                     className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary"
                   />
                   <div className="flex justify-between text-[10px] text-gray-400 mt-1">
-                    <span>1px</span>
-                    <span>{originalDimensions.width}px</span>
+                    <span>{minW}px</span>
+                    <span>{maxW}px</span>
                   </div>
                 </div>
 

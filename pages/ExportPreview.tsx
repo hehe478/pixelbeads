@@ -16,148 +16,282 @@ const ExportPreview: React.FC = () => {
   const [totalBeads, setTotalBeads] = useState(0);
   const [colorCounts, setColorCounts] = useState<{[key: string]: number}>({});
 
-  // Fix: Memoize Order ID and Date to prevent changes on re-render
-  const { dateStr, timeStr, orderId } = useMemo(() => {
+  const { dateStr, orderId } = useMemo(() => {
     const now = new Date();
     return {
-      dateStr: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
-      timeStr: `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`,
-      // Use ID if available to make order ID consistent, otherwise random
-      orderId: id && id !== 'custom' ? `#PB-${id.slice(-5).toUpperCase()}` : `#PB-${now.getTime().toString().slice(-5)}`
+      dateStr: `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}-${now.getDate().toString().padStart(2,'0')}`,
+      orderId: id && id !== 'custom' ? `ID: ${id.slice(-6).toUpperCase()}` : `ID: ${now.getTime().toString().slice(-6)}`
     };
   }, [id]);
 
   useEffect(() => {
     if (!allBeads || allBeads.length === 0) return;
 
-    // Calculate stats
     const counts: {[key: string]: number} = {};
     let total = 0;
     Object.values(grid).forEach((colorId: any) => {
       counts[colorId] = (counts[colorId] || 0) + 1;
       total++;
     });
+    
+    const sortedColorKeys = Object.keys(counts).sort((a, b) => {
+        const beadA = allBeads.find(x => x.id === a);
+        const beadB = allBeads.find(x => x.id === b);
+        if (!beadA || !beadB) return 0;
+        return beadA.code.localeCompare(beadB.code);
+    });
+
     setColorCounts(counts);
     setTotalBeads(total);
 
-    // Render Canvas Preview - BLUEPRINT STYLE
     const canvas = canvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        const CELL_SIZE = 30; // Larger cell for text
-        const PADDING_LEFT = 40;
-        const PADDING_TOP = 40;
+        // --- CONFIGURATION ---
+        const CELL_SIZE = 24;
+        const RULER_SIZE = 40; // Increased for better visibility
+        const GRID_MARGIN_X = 60; // Side margins for grid
         
-        // Set canvas resolution high enough for text
-        canvas.width = width * CELL_SIZE + PADDING_LEFT;
-        canvas.height = height * CELL_SIZE + PADDING_TOP;
+        // Header Config
+        const HEADER_HEIGHT = 140;
         
-        // Background
-        ctx.fillStyle = '#f0f4f8'; // Slight blueish tint for blueprint feel
+        // BOM (Bill of Materials) Config
+        const BOM_COLS = 10; 
+        const CHIP_GAP_X = 15; // Gap between chips
+        const CHIP_GAP_Y = 15; // Gap between rows
+        const CHIP_HEIGHT = 70; // Even taller chips for better visibility
+        const MIN_CHIP_WIDTH = 120; // Slightly wider minimum
+        const BOM_MARGIN_TOP = 50;
+        const BOM_PADDING_SIDE = 40; // Left/Right padding for BOM area
+
+        // --- DIMENSIONS CALCULATIONS ---
+        const gridPixelWidth = width * CELL_SIZE + RULER_SIZE;
+        const gridPixelHeight = height * CELL_SIZE + RULER_SIZE;
+
+        // 1. Calculate Minimum Canvas Width required by the BOM (Material List)
+        const minBomSectionWidth = (MIN_CHIP_WIDTH * BOM_COLS) + ((BOM_COLS - 1) * CHIP_GAP_X) + (BOM_PADDING_SIDE * 2);
+        
+        // 2. Calculate Final Canvas Width
+        const canvasWidth = Math.max(gridPixelWidth + GRID_MARGIN_X * 2, minBomSectionWidth);
+        
+        // 3. Calculate DYNAMIC Chip Width to fill the row
+        const availableWidthForChips = canvasWidth - (BOM_PADDING_SIDE * 2) - ((BOM_COLS - 1) * CHIP_GAP_X);
+        const dynamicChipWidth = availableWidthForChips / BOM_COLS;
+
+        // 4. Calculate Height
+        const bomRows = Math.ceil(sortedColorKeys.length / BOM_COLS);
+        const bomHeight = bomRows * (CHIP_HEIGHT + CHIP_GAP_Y) + BOM_PADDING_SIDE + 40; // +40 for title
+
+        const canvasHeight = HEADER_HEIGHT + gridPixelHeight + BOM_MARGIN_TOP + bomHeight;
+
+        // Resize Canvas
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+
+        // --- DRAWING ---
+
+        // 1. Background
+        ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // Draw Rulers Background
-        ctx.fillStyle = '#e2e8f0';
-        ctx.fillRect(0, 0, canvas.width, PADDING_TOP); // Top ruler
-        ctx.fillRect(0, 0, PADDING_LEFT, canvas.height); // Left ruler
-        ctx.fillStyle = '#cbd5e1';
-        ctx.fillRect(0, 0, PADDING_LEFT, PADDING_TOP); // Corner
+        // 2. Header Section
+        ctx.fillStyle = '#1e293b'; // Slate-800
+        ctx.fillRect(0, 0, canvas.width, 110);
+        
+        // Title
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 36px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(title, 40, 55);
 
+        // Info Tags
+        ctx.font = '500 16px sans-serif';
+        ctx.fillStyle = '#cbd5e1'; // Slate-300
+        const infoText = `${width} x ${height} 格  •  共 ${sortedColorKeys.length} 种颜色  •  总计 ${total} 颗豆`;
+        ctx.fillText(infoText, 40, 90);
+
+        // Date/ID (Right aligned)
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText(orderId, canvas.width - 40, 45);
+        ctx.fillText(dateStr, canvas.width - 40, 75);
+
+        // 3. Grid Section
+        const gridStartX = (canvasWidth - gridPixelWidth) / 2;
+        const gridStartY = HEADER_HEIGHT + 20;
+
+        // Draw Rulers Background
+        ctx.fillStyle = '#f8fafc'; // Slate-50
+        ctx.fillRect(gridStartX, gridStartY, gridPixelWidth, RULER_SIZE); // Top ruler
+        ctx.fillRect(gridStartX, gridStartY, RULER_SIZE, gridPixelHeight); // Left ruler
+        
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = 'bold 10px sans-serif';
+        ctx.font = 'bold 11px sans-serif';
         ctx.fillStyle = '#64748b';
 
-        // Draw Top Ruler Numbers
+        // Ruler Numbers
         for (let x = 0; x < width; x++) {
-          const num = x + 1;
-          if (num === 1 || num % 5 === 0) {
-            ctx.fillText(num.toString(), PADDING_LEFT + x * CELL_SIZE + CELL_SIZE / 2, PADDING_TOP / 2);
+          if ((x + 1) % 5 === 0 || x === 0) {
+             ctx.fillText((x+1).toString(), gridStartX + RULER_SIZE + x * CELL_SIZE + CELL_SIZE/2, gridStartY + RULER_SIZE/2);
           }
-          // Tick marks
-          ctx.beginPath();
-          ctx.moveTo(PADDING_LEFT + x * CELL_SIZE + CELL_SIZE, PADDING_TOP - 5);
-          ctx.lineTo(PADDING_LEFT + x * CELL_SIZE + CELL_SIZE, PADDING_TOP);
-          ctx.strokeStyle = '#94a3b8';
-          ctx.stroke();
         }
-
-        // Draw Left Ruler Numbers
         for (let y = 0; y < height; y++) {
-           const num = y + 1;
-           if (num === 1 || num % 5 === 0) {
-             ctx.fillText(num.toString(), PADDING_LEFT / 2, PADDING_TOP + y * CELL_SIZE + CELL_SIZE / 2);
-           }
-           // Tick marks
-           ctx.beginPath();
-           ctx.moveTo(PADDING_LEFT - 5, PADDING_TOP + y * CELL_SIZE + CELL_SIZE);
-           ctx.lineTo(PADDING_LEFT, PADDING_TOP + y * CELL_SIZE + CELL_SIZE);
-           ctx.strokeStyle = '#94a3b8';
-           ctx.stroke();
+          if ((y + 1) % 5 === 0 || y === 0) {
+             ctx.fillText((y+1).toString(), gridStartX + RULER_SIZE/2, gridStartY + RULER_SIZE + y * CELL_SIZE + CELL_SIZE/2);
+          }
         }
 
-        // Main Grid Area Background
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(PADDING_LEFT, PADDING_TOP, width * CELL_SIZE, height * CELL_SIZE);
-
-        // Draw Grid Lines
-        ctx.strokeStyle = '#e2e8f0';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (let x = 0; x <= width; x++) {
-          ctx.moveTo(PADDING_LEFT + x * CELL_SIZE, PADDING_TOP);
-          ctx.lineTo(PADDING_LEFT + x * CELL_SIZE, PADDING_TOP + height * CELL_SIZE);
-        }
-        for (let y = 0; y <= height; y++) {
-          ctx.moveTo(PADDING_LEFT, PADDING_TOP + y * CELL_SIZE);
-          ctx.lineTo(PADDING_LEFT + width * CELL_SIZE, PADDING_TOP + y * CELL_SIZE);
-        }
-        ctx.stroke();
-
-        // Draw Beads and Codes
+        // Draw Pixels and Codes
         Object.entries(grid).forEach(([key, colorId]: [string, any]) => {
           const [x, y] = key.split(',').map(Number);
           const color = allBeads.find(c => c.id === colorId);
           if (color) {
-            const posX = PADDING_LEFT + x * CELL_SIZE;
-            const posY = PADDING_TOP + y * CELL_SIZE;
+            const posX = gridStartX + RULER_SIZE + x * CELL_SIZE;
+            const posY = gridStartY + RULER_SIZE + y * CELL_SIZE;
             
-            // Draw Bead Background
+            // Draw Bead Color
             ctx.fillStyle = color.hex;
             ctx.fillRect(posX, posY, CELL_SIZE, CELL_SIZE);
 
-            // Determine text color using utility
+            // Draw Bead Code text (CRITICAL REQUIREMENT)
             ctx.fillStyle = getTextColor(color.hex);
-            ctx.font = 'bold 9px sans-serif'; 
-            if (color.code) {
-               ctx.fillText(color.code, posX + CELL_SIZE / 2, posY + CELL_SIZE / 2);
-            }
+            // Use a slightly condensed font if code is long, otherwise bold sans
+            ctx.font = color.code.length > 3 ? 'bold 8px sans-serif' : 'bold 9px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(color.code, posX + CELL_SIZE/2, posY + CELL_SIZE/2 + 1);
           }
         });
 
-        // Draw Thicker borders for 10x10 grids
-        ctx.strokeStyle = '#94a3b8';
-        ctx.lineWidth = 1.5;
+        // Grid Lines (Overlay)
+        ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        for (let x = 0; x <= width; x += 10) {
-           ctx.moveTo(PADDING_LEFT + x * CELL_SIZE, PADDING_TOP);
-           ctx.lineTo(PADDING_LEFT + x * CELL_SIZE, PADDING_TOP + height * CELL_SIZE);
+        // Vertical lines
+        for (let x = 0; x <= width; x++) {
+            ctx.moveTo(gridStartX + RULER_SIZE + x * CELL_SIZE, gridStartY + RULER_SIZE);
+            ctx.lineTo(gridStartX + RULER_SIZE + x * CELL_SIZE, gridStartY + gridPixelHeight);
         }
-        for (let y = 0; y <= height; y += 10) {
-           ctx.moveTo(PADDING_LEFT, PADDING_TOP + y * CELL_SIZE);
-           ctx.lineTo(PADDING_LEFT + width * CELL_SIZE, PADDING_TOP + y * CELL_SIZE);
+        // Horizontal lines
+        for (let y = 0; y <= height; y++) {
+            ctx.moveTo(gridStartX + RULER_SIZE, gridStartY + RULER_SIZE + y * CELL_SIZE);
+            ctx.lineTo(gridStartX + gridPixelWidth, gridStartY + RULER_SIZE + y * CELL_SIZE);
         }
         ctx.stroke();
+
+        // 10x10 Thicker Lines
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let x = 0; x <= width; x+=10) {
+            ctx.moveTo(gridStartX + RULER_SIZE + x * CELL_SIZE, gridStartY + RULER_SIZE);
+            ctx.lineTo(gridStartX + RULER_SIZE + x * CELL_SIZE, gridStartY + gridPixelHeight);
+        }
+        for (let y = 0; y <= height; y+=10) {
+            ctx.moveTo(gridStartX + RULER_SIZE, gridStartY + RULER_SIZE + y * CELL_SIZE);
+            ctx.lineTo(gridStartX + gridPixelWidth, gridStartY + RULER_SIZE + y * CELL_SIZE);
+        }
+        ctx.stroke();
+        
+        // Border around grid
+        ctx.strokeStyle = '#334155';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(gridStartX + RULER_SIZE, gridStartY + RULER_SIZE, width * CELL_SIZE, height * CELL_SIZE);
+
+
+        // 4. Material List (BOM) Section
+        const bomStartY = gridStartY + gridPixelHeight + BOM_MARGIN_TOP;
+        
+        // Divider Line
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.setLineDash([6, 6]);
+        ctx.moveTo(40, bomStartY);
+        ctx.lineTo(canvasWidth - 40, bomStartY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // "Materials" Title
+        ctx.fillStyle = '#334155';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('材料清单 / Materials List', BOM_PADDING_SIDE, bomStartY + 35);
+
+        const chipsStartY = bomStartY + 65;
+
+        sortedColorKeys.forEach((colorId, index) => {
+            const bead = allBeads.find(b => b.id === colorId);
+            const count = counts[colorId];
+            if (!bead) return;
+
+            const col = index % BOM_COLS;
+            const row = Math.floor(index / BOM_COLS);
+
+            // Use dynamic width to justify the row
+            const x = BOM_PADDING_SIDE + col * (dynamicChipWidth + CHIP_GAP_X);
+            const y = chipsStartY + row * (CHIP_HEIGHT + CHIP_GAP_Y);
+
+            // Draw Rounded Rect Chip
+            ctx.fillStyle = bead.hex;
+            
+            // Manual Rounded Rect Path
+            const r = 10; // radius
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.lineTo(x + dynamicChipWidth - r, y);
+            ctx.quadraticCurveTo(x + dynamicChipWidth, y, x + dynamicChipWidth, y + r);
+            ctx.lineTo(x + dynamicChipWidth, y + CHIP_HEIGHT - r);
+            ctx.quadraticCurveTo(x + dynamicChipWidth, y + CHIP_HEIGHT, x + dynamicChipWidth - r, y + CHIP_HEIGHT);
+            ctx.lineTo(x + r, y + CHIP_HEIGHT);
+            ctx.quadraticCurveTo(x, y + CHIP_HEIGHT, x, y + CHIP_HEIGHT - r);
+            ctx.lineTo(x, y + r);
+            ctx.quadraticCurveTo(x, y, x + r, y);
+            ctx.closePath();
+            
+            ctx.fill();
+            // Subtle border for light colors
+            ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Text Contrast
+            const textColor = getTextColor(bead.hex);
+            ctx.fillStyle = textColor;
+
+            // Brand (Top Left) - Larger font
+            ctx.font = 'bold 12px sans-serif'; // Increased font size
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.globalAlpha = 0.85;
+            ctx.fillText(bead.brand, x + 10, y + 8);
+
+            // Code (Center) - Even larger font
+            ctx.font = '800 24px sans-serif'; // Extra bold, larger
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.globalAlpha = 1.0;
+            ctx.fillText(bead.code, x + dynamicChipWidth/2, y + CHIP_HEIGHT/2 + 2);
+
+            // Count (Bottom Right) - Larger font
+            ctx.font = 'bold 16px sans-serif'; // Increased font size
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'bottom';
+            ctx.globalAlpha = 0.95;
+            ctx.fillText(`x${count}`, x + dynamicChipWidth - 10, y + CHIP_HEIGHT - 8);
+        });
       }
     }
-  }, [grid, width, height, allBeads]);
+  }, [grid, width, height, allBeads, title, dateStr, orderId]);
 
   const handleBack = () => {
     if (window.history.state && window.history.length > 1) {
        navigate(-1);
     } else {
-       // Fallback if opened directly or history is missing
        navigate(`/editor/${id || 'custom'}`, {
          state: { grid, width, height, title }
        });
@@ -175,110 +309,26 @@ const ExportPreview: React.FC = () => {
   };
 
   return (
-    <div className="bg-black/80 font-display antialiased h-full w-full overflow-y-auto flex flex-col items-center relative z-50">
-      <div className="sticky top-0 w-full p-4 flex justify-between items-center z-[60] text-white bg-black/40 backdrop-blur-md shrink-0">
-          <button onClick={handleBack} className="flex items-center justify-center p-2 rounded-full bg-white/10 backdrop-blur hover:bg-white/20 transition cursor-pointer">
-             <span className="material-symbols-outlined text-white font-light">close</span>
+    <div className="bg-slate-100 dark:bg-black font-display antialiased h-screen w-full flex flex-col relative z-50">
+      <div className="bg-white dark:bg-surface-dark border-b border-gray-200 dark:border-gray-800 p-4 flex justify-between items-center z-[60] shadow-sm shrink-0">
+          <button onClick={handleBack} className="flex items-center gap-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 px-3 py-1.5 rounded-lg transition-colors">
+             <span className="material-symbols-outlined text-[20px]">arrow_back</span>
+             <span className="text-sm font-bold">返回</span>
           </button>
-          <span className="text-sm font-medium opacity-80">导出预览</span>
-          <button onClick={downloadImage} className="flex items-center justify-center p-2 rounded-full bg-white/10 backdrop-blur hover:bg-white/20 transition cursor-pointer">
-             <span className="material-symbols-outlined text-white font-light">ios_share</span>
+          <span className="text-sm font-bold text-gray-900 dark:text-white">导出预览</span>
+          <button onClick={downloadImage} className="flex items-center gap-2 bg-primary hover:bg-primary-dark text-white px-4 py-1.5 rounded-full shadow-lg shadow-primary/30 transition-all active:scale-95">
+             <span className="material-symbols-outlined text-[18px]">download</span>
+             <span className="text-sm font-bold">保存图片</span>
           </button>
       </div>
 
-      <div className="w-full max-w-2xl flex flex-col relative z-10 px-4 pt-4 pb-24 shrink-0">
-          <div className="bg-white dark:bg-[#1e1e2f] rounded-lg shadow-2xl overflow-hidden flex flex-col relative">
-          <div className="flex-1">
-              <div className="p-6 border-b border-dashed border-gray-200 dark:border-gray-700">
-              <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded bg-primary text-white flex items-center justify-center">
-                      <span className="material-symbols-outlined text-[20px] font-light">grid_view</span>
-                  </div>
-                  <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">PixelBead</h1>
-                  </div>
-                  <div className="text-right">
-                  <p className="text-[10px] uppercase font-mono text-gray-400 dark:text-gray-500 tracking-wider">单据编号</p>
-                  <p className="text-xs font-mono font-bold text-gray-900 dark:text-white">{orderId}</p>
-                  </div>
-              </div>
-              <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 font-mono mt-4">
-                  <span>{dateStr}</span>
-                  <span>{timeStr}</span>
-              </div>
-              </div>
-
-              <div className="p-4 bg-gray-50 dark:bg-black/20 overflow-x-auto">
-              {/* Canvas Container */}
-              <div className="min-w-full flex items-center justify-center">
-                  <canvas 
-                  ref={canvasRef} 
-                  className="shadow-lg rounded-sm"
-                  style={{ 
-                      maxWidth: '100%',
-                      height: 'auto'
-                  }}
-                  />
-              </div>
-              <div className="mt-4 text-center">
-                  <h2 className="text-lg font-bold text-gray-900 dark:text-white">{title}</h2>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">{width}x{height} 网格 • {Object.keys(colorCounts).length} 色 • {totalBeads} 豆</p>
-              </div>
-              </div>
-
-              <div className="relative h-4 w-full">
-              <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="w-full border-t border-dashed border-gray-300 dark:border-gray-600"></div>
-              </div>
-              <div className="absolute inset-0 flex justify-center">
-                  <span className="bg-white dark:bg-[#1e1e2f] px-2 text-[10px] font-mono uppercase tracking-widest text-gray-400">材料清单</span>
-              </div>
-              </div>
-
-              <div className="p-6 grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {Object.entries(colorCounts).map(([colorId, count]) => {
-                  const color = allBeads.find(c => c.id === colorId);
-                  if (!color) return null;
-                  return (
-                  <div key={colorId} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-100 dark:border-white/5">
-                      <div className="w-8 h-8 rounded-full shadow-inner border border-black/5 shrink-0" style={{ backgroundColor: color.hex }}></div>
-                      <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold font-mono text-gray-900 dark:text-white">{color.code}</span>
-                      </div>
-                      <span className="text-[10px] text-gray-500 dark:text-gray-400 truncate block">{color.name}</span>
-                      </div>
-                      <div className="text-right shrink-0 bg-white dark:bg-black/20 px-1.5 py-0.5 rounded text-center min-w-[32px]">
-                      <span className="text-xs font-mono font-bold text-primary dark:text-primary-light">{count}</span>
-                      </div>
-                  </div>
-                  );
-              })}
-              </div>
-
-              <div className="mt-2 bg-gray-50 dark:bg-gray-800/50 p-6 flex flex-col items-center justify-center text-center gap-1 border-t border-dashed border-gray-200 dark:border-gray-700">
-              <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 text-primary mb-2">
-                  <span className="material-symbols-outlined">public</span>
-              </div>
-              <p className="text-sm font-bold text-gray-900 dark:text-white">在线创作与分享</p>
-              <p className="text-primary font-bold text-base tracking-tight font-mono mt-1">www.pixel-beads.com</p>
-              </div>
-              
-              <div className="receipt-edge h-4 w-full -mb-4" style={{
-              background: 'linear-gradient(-45deg, transparent 8px, white 0) 0 100%, linear-gradient(45deg, transparent 8px, white 0) 0 100%',
-              backgroundRepeat: 'repeat-x',
-              backgroundPosition: 'left bottom',
-              backgroundSize: '16px 16px'
-              }}></div>
+      <div className="flex-1 overflow-auto p-4 md:p-8 flex items-start justify-center">
+          <div className="shadow-2xl rounded-sm overflow-hidden bg-white max-w-full">
+              <canvas 
+                ref={canvasRef} 
+                className="block max-w-full h-auto"
+              />
           </div>
-          </div>
-      </div>
-      
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 px-6 z-30 w-full max-w-sm">
-          <button onClick={downloadImage} className="w-full bg-primary hover:bg-blue-600 active:scale-[0.98] transition-all text-white font-bold py-4 px-6 rounded-full shadow-lg shadow-primary/30 flex items-center justify-center gap-2 text-lg">
-          <span className="material-symbols-outlined font-light">download</span>
-          保存图片回执
-          </button>
       </div>
     </div>
   );

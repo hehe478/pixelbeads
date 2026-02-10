@@ -59,11 +59,96 @@ export const rgbToLab = (r: number, g: number, b: number): LabColor => {
 };
 
 // CIE76 Distance (Euclidean distance in LAB space)
-// Good balance of performance and accuracy for pixel art
 export const deltaE = (lab1: LabColor, lab2: LabColor): number => {
   return Math.sqrt(
     Math.pow(lab1.l - lab2.l, 2) +
     Math.pow(lab1.a - lab2.a, 2) +
     Math.pow(lab1.b - lab2.b, 2)
   );
+};
+
+/**
+ * Removes isolated stray pixels ("noise") from the grid.
+ * SMART UPDATE: 
+ * It now checks the Color Difference (DeltaE) between the stray pixel and its neighbors.
+ * @param threshold The DeltaE threshold. If color diff > threshold, the pixel is preserved.
+ *                  Higher threshold = Stronger denoise (removes more pixels).
+ *                  Lower threshold = Weaker denoise (preserves more pixels).
+ */
+export const denoiseGrid = (
+  grid: { [key: string]: string }, 
+  minX: number, 
+  maxX: number, 
+  minY: number, 
+  maxY: number,
+  colorMap: Record<string, { hex: string }>,
+  threshold: number = 55
+): { [key: string]: string } => {
+  const newGrid = { ...grid };
+  const get = (x: number, y: number) => grid[`${x},${y}`];
+
+  // We iterate through the existing grid cells
+  for (let y = minY; y < maxY; y++) {
+    for (let x = minX; x < maxX; x++) {
+      const currentId = get(x, y);
+      if (!currentId) continue;
+
+      const neighbors: string[] = [];
+      // Check 8 neighbors
+      const offsets = [
+        [-1, -1], [0, -1], [1, -1],
+        [-1, 0],           [1, 0],
+        [-1, 1],  [0, 1],  [1, 1]
+      ];
+
+      offsets.forEach(([dx, dy]) => {
+        const nColor = get(x + dx, y + dy);
+        if (nColor) neighbors.push(nColor);
+      });
+
+      // If no neighbors, leave it.
+      if (neighbors.length === 0) continue;
+
+      // If the current color exists in neighbors, it's connected, so keep it.
+      if (neighbors.includes(currentId)) continue;
+
+      // --- ISOLATED PIXEL DETECTED ---
+      
+      // Find most frequent neighbor
+      const counts: { [key: string]: number } = {};
+      let maxColorId = neighbors[0];
+      let maxCount = 0;
+
+      neighbors.forEach(n => {
+        counts[n] = (counts[n] || 0) + 1;
+        if (counts[n] > maxCount) {
+          maxCount = counts[n];
+          maxColorId = n;
+        }
+      });
+
+      // --- SMART CHECK: IS IT NOISE OR FEATURE? ---
+      const currentColor = colorMap[currentId];
+      const neighborColor = colorMap[maxColorId];
+
+      if (currentColor && neighborColor) {
+          const rgb1 = hexToRgb(currentColor.hex);
+          const rgb2 = hexToRgb(neighborColor.hex);
+          const lab1 = rgbToLab(rgb1.r, rgb1.g, rgb1.b);
+          const lab2 = rgbToLab(rgb2.r, rgb2.g, rgb2.b);
+          
+          const distance = deltaE(lab1, lab2);
+          
+          // If distance is greater than threshold, we assume it's an intentional feature (e.g. an eye)
+          // and we PRESERVE it.
+          if (distance > threshold) {
+              continue; 
+          }
+      }
+
+      // If we are here, it's isolated AND low contrast (or below threshold) -> Replace it
+      newGrid[`${x},${y}`] = maxColorId;
+    }
+  }
+  return newGrid;
 };
