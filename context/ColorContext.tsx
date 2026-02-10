@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { beadsData } from '../data/beads_data';
-import { BeadColor, BeadRaw, PaletteConfig } from '../types';
+import { BeadColor, BeadRaw, PaletteConfig, CustomPalette } from '../types';
 import { rgbToHex } from '../utils/colors';
 
 interface ColorContextType {
   allBeads: BeadColor[];
-  currentPalette: BeadColor[]; // Kept for backward compatibility if needed, but primary usage moves to allBeads + filtering
+  currentPalette: BeadColor[];
   recentColors: BeadColor[];
+  customPalettes: CustomPalette[];
   paletteConfig: PaletteConfig;
   availableBrands: string[];
   availableSets: number[];
@@ -14,29 +15,35 @@ interface ColorContextType {
   setSet: (set: number | 'all' | 'custom') => void;
   toggleHiddenColor: (id: string) => void;
   toggleCustomColor: (id: string) => void;
+  toggleBeadInPalette: (paletteId: string, beadId: string) => void;
+  updateCustomPaletteBeads: (paletteId: string, beadIds: string[]) => void;
   resetCustomPalette: () => void;
   addToRecent: (color: BeadColor) => void;
+  createCustomPalette: () => void;
+  renameCustomPalette: (id: string, name: string) => void;
+  deleteCustomPalette: (id: string) => void;
+  selectCustomPalette: (id: string) => void;
+  getActiveCustomPalette: () => CustomPalette | undefined;
 }
 
 const ColorContext = createContext<ColorContextType | undefined>(undefined);
 
-// Transform Raw Data
+// Transform Raw Data - Done once at module level
 const processedBeads: BeadColor[] = (beadsData as BeadRaw[]).map(bead => {
   const brand = bead.id.split('_')[0];
   return {
     id: bead.id,
     code: bead.code,
     hex: rgbToHex(bead.rgb[0], bead.rgb[1], bead.rgb[2]),
-    sets: bead.sets,
+    sets: bead.sets || [],
     brand: brand,
     name: `${brand} ${bead.code}`
   };
 });
 
 const DEFAULT_CONFIG: PaletteConfig = {
-  brand: 'COCO', // Default brand
-  set: 24,       // Default set
-  customIds: [],
+  brand: 'COCO',
+  set: 24,
   hiddenIds: []
 };
 
@@ -55,7 +62,6 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const saved = localStorage.getItem('pixelbead_recent_colors');
       if (saved) {
         const parsedIds = JSON.parse(saved) as string[];
-        // Rehydrate full objects from IDs
         return parsedIds.map(id => processedBeads.find(b => b.id === id)).filter((b): b is BeadColor => !!b);
       }
       return [];
@@ -64,56 +70,68 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   });
 
-  // Persist config
+  const [customPalettes, setCustomPalettes] = useState<CustomPalette[]>(() => {
+    try {
+      const saved = localStorage.getItem('pixelbead_custom_palettes');
+      const parsed = saved ? JSON.parse(saved) : [];
+      // Ensure every palette has a valid beadIds array to prevent crashes
+      return Array.isArray(parsed) ? parsed.map((p: any) => ({
+        ...p,
+        beadIds: Array.isArray(p.beadIds) ? p.beadIds : []
+      })) : [];
+    } catch {
+      return [];
+    }
+  });
+
   useEffect(() => {
     localStorage.setItem('pixelbead_palette_config', JSON.stringify(paletteConfig));
   }, [paletteConfig]);
 
-  // Persist recents
   useEffect(() => {
-    const ids = recentColors.map(c => c.id);
-    localStorage.setItem('pixelbead_recent_colors', JSON.stringify(ids));
+    localStorage.setItem('pixelbead_recent_colors', JSON.stringify(recentColors.map(c => c.id)));
   }, [recentColors]);
 
-  // Derived Data
-  const availableBrands = useMemo(() => {
-    return Array.from(new Set(processedBeads.map(b => b.brand)));
-  }, []);
+  useEffect(() => {
+    localStorage.setItem('pixelbead_custom_palettes', JSON.stringify(customPalettes));
+  }, [customPalettes]);
+
+  const availableBrands = useMemo(() => Array.from(new Set(processedBeads.map(b => b.brand))), []);
 
   const availableSets = useMemo(() => {
+    if (paletteConfig.brand === '自定义') return [];
     const brandBeads = processedBeads.filter(b => b.brand === paletteConfig.brand);
     const sets = new Set<number>();
     brandBeads.forEach(b => b.sets?.forEach(s => sets.add(s)));
     return Array.from(sets).sort((a, b) => a - b);
   }, [paletteConfig.brand]);
 
-  // Legacy Filter Logic (Still useful for quick filtering if needed)
   const currentPalette = useMemo(() => {
-    let baseList = processedBeads.filter(b => b.brand === paletteConfig.brand);
-
     if (paletteConfig.set === 'custom') {
-      return processedBeads.filter(b => paletteConfig.customIds.includes(b.id));
-    } else if (paletteConfig.set !== 'all') {
+      const activePalette = customPalettes.find(p => p.id === paletteConfig.activeCustomId);
+      if (activePalette && Array.isArray(activePalette.beadIds)) {
+        return processedBeads.filter(b => activePalette.beadIds.includes(b.id));
+      }
+      return [];
+    } 
+    let baseList = processedBeads.filter(b => b.brand === paletteConfig.brand);
+    if (paletteConfig.set !== 'all') {
       baseList = baseList.filter(b => b.sets.includes(paletteConfig.set as number));
     }
-
-    // Apply Hidden Mask (for standard sets)
     return baseList.filter(b => !paletteConfig.hiddenIds.includes(b.id));
-  }, [paletteConfig]);
+  }, [paletteConfig, customPalettes]);
 
-  // Actions
   const setBrand = (brand: string) => {
+    if (brand === '自定义') return;
     const brandBeads = processedBeads.filter(b => b.brand === brand);
     const brandSets = new Set<number>();
     brandBeads.forEach(b => b.sets?.forEach(s => brandSets.add(s)));
     const setsArr = Array.from(brandSets).sort((a, b) => a - b);
-    
     let newSet = paletteConfig.set;
-    if (newSet !== 'all' && newSet !== 'custom' && !brandSets.has(newSet as number)) {
+    if (newSet === 'custom' || (newSet !== 'all' && !brandSets.has(newSet as number))) {
         newSet = setsArr.length > 0 ? setsArr[0] : 'all';
     }
-
-    setPaletteConfig(prev => ({ ...prev, brand, set: newSet }));
+    setPaletteConfig(prev => ({ ...prev, brand, set: newSet, activeCustomId: undefined }));
   };
 
   const setSet = (set: number | 'all' | 'custom') => {
@@ -121,38 +139,75 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const toggleHiddenColor = (id: string) => {
-    setPaletteConfig(prev => {
-      const isHidden = prev.hiddenIds.includes(id);
-      return {
-        ...prev,
-        hiddenIds: isHidden 
-          ? prev.hiddenIds.filter(hid => hid !== id)
-          : [...prev.hiddenIds, id]
-      };
+    setPaletteConfig(prev => ({
+      ...prev,
+      hiddenIds: prev.hiddenIds.includes(id) ? prev.hiddenIds.filter(hid => hid !== id) : [...prev.hiddenIds, id]
+    }));
+  };
+
+  const getActiveCustomPalette = () => customPalettes.find(p => p.id === paletteConfig.activeCustomId);
+
+  const createCustomPalette = () => {
+    const newPalette: CustomPalette = {
+      id: Date.now().toString(),
+      name: `我的配色 ${customPalettes.length + 1}`,
+      beadIds: [],
+      createdAt: Date.now()
+    };
+    setCustomPalettes(prev => [newPalette, ...prev]);
+    selectCustomPalette(newPalette.id);
+  };
+
+  const renameCustomPalette = (id: string, name: string) => {
+    setCustomPalettes(prev => prev.map(p => p.id === id ? { ...p, name } : p));
+  };
+
+  const deleteCustomPalette = (id: string) => {
+    setCustomPalettes(prev => {
+      const newState = prev.filter(p => p.id !== id);
+      if (paletteConfig.activeCustomId === id) {
+        if (newState.length > 0) selectCustomPalette(newState[0].id);
+        else setPaletteConfig({ ...DEFAULT_CONFIG });
+      }
+      return newState;
     });
+  };
+
+  const selectCustomPalette = (id: string) => {
+    const palette = customPalettes.find(p => p.id === id);
+    if (!palette) return;
+    const beads = processedBeads.filter(b => (palette.beadIds || []).includes(b.id));
+    const uniqueBrands = new Set(beads.map(b => b.brand));
+    let displayBrand = uniqueBrands.size === 1 ? Array.from(uniqueBrands)[0] : '自定义';
+    setPaletteConfig(prev => ({ ...prev, brand: displayBrand, set: 'custom', activeCustomId: id }));
   };
 
   const toggleCustomColor = (id: string) => {
-    setPaletteConfig(prev => {
-      const isSelected = prev.customIds.includes(id);
-      return {
-        ...prev,
-        customIds: isSelected
-          ? prev.customIds.filter(cid => cid !== id)
-          : [...prev.customIds, id]
-      };
-    });
+    if (paletteConfig.set !== 'custom' || !paletteConfig.activeCustomId) return;
+    toggleBeadInPalette(paletteConfig.activeCustomId, id);
+  };
+
+  const toggleBeadInPalette = (paletteId: string, beadId: string) => {
+    setCustomPalettes(prev => prev.map(p => {
+      if (p.id === paletteId) {
+        const ids = Array.isArray(p.beadIds) ? p.beadIds : [];
+        const nextIds = ids.includes(beadId) ? ids.filter(bid => bid !== beadId) : [...ids, beadId];
+        return { ...p, beadIds: nextIds };
+      }
+      return p;
+    }));
+  };
+
+  const updateCustomPaletteBeads = (paletteId: string, beadIds: string[]) => {
+    setCustomPalettes(prev => prev.map(p => p.id === paletteId ? { ...p, beadIds } : p));
   };
 
   const resetCustomPalette = () => {
-      setPaletteConfig(prev => ({...prev, customIds: []}));
-  }
+    if (paletteConfig.activeCustomId) updateCustomPaletteBeads(paletteConfig.activeCustomId, []);
+  };
 
   const addToRecent = (color: BeadColor) => {
-    setRecentColors(prev => {
-      const filtered = prev.filter(c => c.id !== color.id);
-      return [color, ...filtered].slice(0, 20); // Keep last 20
-    });
+    setRecentColors(prev => [color, ...prev.filter(c => c.id !== color.id)].slice(0, 20));
   };
 
   return (
@@ -160,6 +215,7 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       allBeads: processedBeads,
       currentPalette,
       recentColors,
+      customPalettes,
       paletteConfig,
       availableBrands,
       availableSets,
@@ -167,8 +223,15 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setSet,
       toggleHiddenColor,
       toggleCustomColor,
+      toggleBeadInPalette,
+      updateCustomPaletteBeads,
       resetCustomPalette,
-      addToRecent
+      addToRecent,
+      createCustomPalette,
+      renameCustomPalette,
+      deleteCustomPalette,
+      selectCustomPalette,
+      getActiveCustomPalette
     }}>
       {children}
     </ColorContext.Provider>
@@ -177,8 +240,6 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
 export const useColorPalette = () => {
   const context = useContext(ColorContext);
-  if (context === undefined) {
-    throw new Error('useColorPalette must be used within a ColorProvider');
-  }
+  if (context === undefined) throw new Error('useColorPalette must be used within a ColorProvider');
   return context;
 }

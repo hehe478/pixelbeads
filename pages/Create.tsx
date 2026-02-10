@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Draft } from '../types';
 import { useColorPalette } from '../context/ColorContext';
+import { rgbToLab, deltaE, hexToRgb } from '../utils/colors';
 
 const Create: React.FC = () => {
   const navigate = useNavigate();
@@ -39,40 +40,6 @@ const Create: React.FC = () => {
     };
   }, [previewUrl]);
 
-  // Hex to RGB helper
-  const hexToRgb = (hex: string) => {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result ? {
-      r: parseInt(result[1], 16),
-      g: parseInt(result[2], 16),
-      b: parseInt(result[3], 16)
-    } : { r: 0, g: 0, b: 0 };
-  };
-
-  // Find closest color
-  const findClosestColor = (r: number, g: number, b: number) => {
-    if (!allBeads || allBeads.length === 0) return '000000';
-
-    let minDistance = Infinity;
-    let closestColor = allBeads[0].id;
-
-    allBeads.forEach(color => {
-      const cRgb = hexToRgb(color.hex);
-      // Simple Euclidean distance
-      const distance = Math.sqrt(
-        Math.pow(r - cRgb.r, 2) +
-        Math.pow(g - cRgb.g, 2) +
-        Math.pow(b - cRgb.b, 2)
-      );
-      if (distance < minDistance) {
-        minDistance = distance;
-        closestColor = color.id;
-      }
-    });
-
-    return closestColor;
-  };
-
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
@@ -99,63 +66,93 @@ const Create: React.FC = () => {
     }
     
     setIsProcessing(true);
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        const width = targetWidth;
-        // Calculate height based on aspect ratio
-        const height = Math.round(originalDimensions.height * (targetWidth / originalDimensions.width));
+    
+    // Give UI a moment to update "Processing..." state
+    setTimeout(() => {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            const width = targetWidth;
+            const height = Math.round(originalDimensions.height * (targetWidth / originalDimensions.width));
 
-        canvas.width = width;
-        canvas.height = height;
+            canvas.width = width;
+            canvas.height = height;
 
-        if (ctx) {
-          // Disable smoothing for pixel art look if desired, but for photo import usually we want smooth downsampling first
-          ctx.drawImage(img, 0, 0, width, height);
-          const imageData = ctx.getImageData(0, 0, width, height);
-          const data = imageData.data;
-          const initialGrid: {[key: string]: string} = {};
+            if (ctx) {
+              // 1. Draw image to small canvas
+              ctx.drawImage(img, 0, 0, width, height);
+              const imageData = ctx.getImageData(0, 0, width, height);
+              const data = imageData.data;
+              
+              // 2. Prepare palette cache (pre-calc LAB values for performance)
+              const paletteCache = allBeads.map(bead => {
+                  const rgb = hexToRgb(bead.hex);
+                  return {
+                      id: bead.id,
+                      rgb: { r: rgb.r, g: rgb.g, b: rgb.b },
+                      lab: rgbToLab(rgb.r, rgb.g, rgb.b)
+                  };
+              });
 
-          for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-              const index = (y * width + x) * 4;
-              const r = data[index];
-              const g = data[index + 1];
-              const b = data[index + 2];
-              const a = data[index + 3];
+              const initialGrid: {[key: string]: string} = {};
 
-              if (a > 128) { // If not transparent
-                const colorId = findClosestColor(r, g, b);
-                initialGrid[`${x},${y}`] = colorId;
+              // 3. Standard CIELAB Matching Loop (No Dithering)
+              for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                  const i = (y * width + x) * 4;
+                  const alpha = data[i + 3];
+
+                  if (alpha < 128) continue; // Skip transparent
+
+                  const r = data[i];
+                  const g = data[i + 1];
+                  const b = data[i + 2];
+
+                  // Find closest color using CIELAB
+                  const currentLab = rgbToLab(r, g, b);
+                  
+                  let minDistance = Infinity;
+                  let closestBead = paletteCache[0];
+
+                  for (const p of paletteCache) {
+                      const dist = deltaE(currentLab, p.lab);
+                      if (dist < minDistance) {
+                          minDistance = dist;
+                          closestBead = p;
+                      }
+                  }
+
+                  // Assign closest color ID
+                  initialGrid[`${x},${y}`] = closestBead.id;
+                }
               }
+              
+              navigate('/editor/imported', { 
+                state: { 
+                  grid: initialGrid, 
+                  width, 
+                  height,
+                  title: '导入的照片'
+                } 
+              });
             }
+          } catch (err) {
+            console.error("Processing failed", err);
+            alert("图片处理出错");
+          } finally {
+            setIsProcessing(false);
+            setShowImportDialog(false);
           }
-          
-          navigate('/editor/imported', { 
-            state: { 
-              grid: initialGrid, 
-              width, 
-              height,
-              title: '导入的照片'
-            } 
-          });
-        }
-      } catch (err) {
-        console.error("Processing failed", err);
-        alert("图片处理出错");
-      } finally {
-        setIsProcessing(false);
-        setShowImportDialog(false);
-      }
-    };
-    img.onerror = () => {
-        setIsProcessing(false);
-        alert("图片加载失败");
-    };
-    img.src = previewUrl;
+        };
+        img.onerror = () => {
+            setIsProcessing(false);
+            alert("图片加载失败");
+        };
+        img.src = previewUrl;
+    }, 100);
   };
 
   const handleDeleteClick = (e: React.MouseEvent, id: string) => {
@@ -242,7 +239,7 @@ const Create: React.FC = () => {
                     <span className="material-symbols-outlined text-2xl">image</span>
                   </div>
                   <span className="font-bold text-lg">导入照片</span>
-                  <span className="text-xs text-white/80 mt-1">本地处理，智能转换像素画</span>
+                  <span className="text-xs text-white/80 mt-1">智能算法 (CIELAB)</span>
                 </>
               )}
             </button>

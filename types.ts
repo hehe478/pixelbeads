@@ -11,6 +11,22 @@ export interface PixelArt {
   colorCount?: number;
 }
 
+export interface Draft {
+  id: string;
+  title: string;
+  grid: { [key: string]: string };
+  width: number;
+  height: number;
+  lastModified: number;
+  thumbnail?: string;
+  minX?: number;
+  minY?: number;
+  isFreeMode?: boolean;
+  offsetX?: number;
+  offsetY?: number;
+  zoom?: number;
+}
+
 export interface BeadRaw {
   id: string;
   code: string;
@@ -27,27 +43,18 @@ export interface BeadColor {
   sets: number[];
 }
 
+export interface CustomPalette {
+  id: string;
+  name: string;
+  beadIds: string[];
+  createdAt: number;
+}
+
 export interface PaletteConfig {
   brand: string;
   set: number | 'all' | 'custom';
-  customIds: string[]; // List of IDs if set is 'custom'
+  activeCustomId?: string; // ID of the currently selected custom palette
   hiddenIds: string[]; // List of IDs to hide from standard sets
-}
-
-export interface Draft {
-  id: string;
-  title: string;
-  grid: {[key: string]: string};
-  width: number;
-  height: number;
-  lastModified: number;
-  thumbnail?: string;
-  minX?: number;
-  minY?: number;
-  isFreeMode?: boolean;
-  offsetX?: number;
-  offsetY?: number;
-  zoom?: number;
 }
 
 // Fallback constant removed, will be loaded from JSON via Context

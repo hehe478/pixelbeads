@@ -49,6 +49,28 @@
         -ms-overflow-style: none;
         scrollbar-width: none;
       }
+      
+      /* 自定义横向滚动条样式 - 用于电脑和平板 */
+      .custom-horizontal-scrollbar::-webkit-scrollbar {
+        height: 4px; /* 较细的滚动条 */
+      }
+      .custom-horizontal-scrollbar::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .custom-horizontal-scrollbar::-webkit-scrollbar-thumb {
+        background: rgba(100, 116, 139, 0.2); /* 浅灰色滑块 */
+        border-radius: 10px;
+      }
+      .custom-horizontal-scrollbar:hover::-webkit-scrollbar-thumb {
+        background: rgba(100, 116, 139, 0.4); /* 悬停时加深 */
+      }
+      .dark .custom-horizontal-scrollbar::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .dark .custom-horizontal-scrollbar:hover::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.2);
+      }
+
       .material-symbols-outlined {
         font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
       }
