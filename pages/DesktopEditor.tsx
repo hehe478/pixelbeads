@@ -276,6 +276,25 @@ const DesktopEditor: React.FC = () => {
 
   const handleExportClick = () => { handleSave(true); setShowExportModal(true); };
 
+  const handleMirror = () => {
+    const width = bounds.maxX - bounds.minX;
+    const newGrid: {[key: string]: string} = {};
+    
+    Object.entries(grid).forEach(([key, colorId]) => {
+        const [x, y] = key.split(',').map(Number);
+        // Horizontal flip: 
+        // 1. Get relative x from the left edge (bounds.minX)
+        // 2. Flip it within the width
+        // 3. Add back to bounds.minX
+        if (isNaN(x) || isNaN(y)) return;
+        const newX = bounds.minX + (width - 1) - (x - bounds.minX);
+        newGrid[`${newX},${y}`] = colorId as string;
+    });
+    
+    setGrid(newGrid);
+    commitHistory(newGrid);
+  };
+
   const performConversion = () => {
       if (!currentPalette || currentPalette.length === 0) return;
       setIsConverting(true);
@@ -377,13 +396,13 @@ const DesktopEditor: React.FC = () => {
             const paletteCache = currentPalette.map(bead => { const rgb = hexToRgb(bead.hex); return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) }; });
             
             // Iterate directly over grid items for O(N) performance instead of O(W*H)
-            Object.entries(processedGrid).forEach(([key, colorId]: [string, string]) => {
+            Object.entries(processedGrid).forEach(([key, colorId]) => {
                 const [gx, gy] = key.split(',').map(Number);
                 const x = gx - bounds.minX;
                 const y = gy - bounds.minY;
                 
                 if (x >= 0 && x < width && y >= 0 && y < height) {
-                    const originalBead = allBeadsMap[colorId];
+                    const originalBead = allBeadsMap[colorId as string];
                     if (originalBead) {
                         const rgb = hexToRgb(originalBead.hex);
                         const currentLab = rgbToLab(rgb.r, rgb.g, rgb.b);
@@ -403,7 +422,7 @@ const DesktopEditor: React.FC = () => {
                     }
                 }
             });
-        } else { Object.entries(processedGrid).forEach(([key, val]: [string, string]) => { const [x, y] = key.split(',').map(Number); exportGrid[`${x - bounds.minX},${y - bounds.minY}`] = val; }); }
+        } else { Object.entries(processedGrid).forEach(([key, val]) => { const [x, y] = key.split(',').map(Number); exportGrid[`${x - bounds.minX},${y - bounds.minY}`] = val as string; }); }
         setIsConverting(false); setShowExportModal(false);
         navigate(`/preview/${draftIdRef.current || 'custom'}`, { state: { grid: exportGrid, width, height, title: shouldMapColors ? `${title} (套装转换)` : title } });
      }, 100);
@@ -596,6 +615,7 @@ const DesktopEditor: React.FC = () => {
                       </div>
                       <button onClick={handleUndo} disabled={historyIndex === 0} className="p-2 rounded-full hover:bg-slate-100 disabled:opacity-30 transition-colors text-slate-600"><span className="material-symbols-outlined">undo</span></button>
                       <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className="p-2 rounded-full hover:bg-slate-100 disabled:opacity-30 transition-colors text-slate-600"><span className="material-symbols-outlined">redo</span></button>
+                      <button onClick={handleMirror} className="p-2 rounded-full text-slate-600 hover:text-primary hover:bg-slate-50 transition-colors" title="水平镜像"><span className="material-symbols-outlined text-[20px]">flip</span></button>
                       <button onClick={() => setShowConvertConfirm(true)} className="p-2 rounded-full text-slate-600 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="转换色彩"><span className="material-symbols-outlined text-[20px]">auto_fix_high</span></button>
                       <button onClick={() => handleSave(false)} className={`p-2 rounded-full hover:bg-slate-100 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
                       <button onClick={() => { setIsBeadMode(true); setTimerSeconds(0); }} className="p-2 rounded-full text-primary hover:bg-blue-50 transition-colors" title="拼豆模式"><span className="material-symbols-outlined text-[20px]">spa</span></button>
