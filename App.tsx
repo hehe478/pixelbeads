@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { HashRouter, Routes, Route, useLocation } from 'react-router-dom';
 import Inspiration from './pages/Inspiration';
@@ -7,6 +8,7 @@ import Editor from './pages/Editor';
 import ExportPreview from './pages/ExportPreview';
 import BottomNav from './components/BottomNav';
 import { ColorProvider } from './context/ColorContext';
+import { AuthProvider } from './context/AuthContext';
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -28,11 +30,13 @@ const AppContent: React.FC = () => {
 
 const App: React.FC = () => {
   return (
-    <ColorProvider>
-      <HashRouter>
-        <AppContent />
-      </HashRouter>
-    </ColorProvider>
+    <AuthProvider>
+      <ColorProvider>
+        <HashRouter>
+          <AppContent />
+        </HashRouter>
+      </ColorProvider>
+    </AuthProvider>
   );
 };
 

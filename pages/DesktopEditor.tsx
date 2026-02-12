@@ -1,13 +1,16 @@
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation, useSearchParams, useParams } from 'react-router-dom';
 import { Draft, BeadColor } from '../types';
 import { useColorPalette } from '../context/ColorContext';
 import { getTextColor, hexToRgb, rgbToLab, deltaE, denoiseGrid } from '../utils/colors';
 import PaletteModal from '../components/PaletteModal';
+import { useAuth } from '../context/AuthContext';
+import { StorageHelper } from '../utils/storageHelper';
 
 type Tool = 'pen' | 'eraser' | 'fill' | 'picker' | 'move';
 
-// Memoized Grid View using Canvas for high performance rendering
+// Memoized Grid View (Same as Mobile)
 const GridView = React.memo(({ 
   grid, 
   bounds, 
@@ -43,8 +46,6 @@ const GridView = React.memo(({
 
     Object.entries(grid).forEach(([key, colorId]) => {
         const [x, y] = key.split(',').map(Number);
-        
-        // Skip rendering if out of current bounds
         if (x < bounds.minX || x >= bounds.maxX || y < bounds.minY || y >= bounds.maxY) return;
         
         const color = allBeadsMap[colorId];
@@ -53,14 +54,11 @@ const GridView = React.memo(({
         const posX = (x - bounds.minX) * cellSize;
         const posY = (y - bounds.minY) * cellSize;
 
-        // Draw pixel
         ctx.fillStyle = color.hex;
         ctx.fillRect(posX, posY, cellSize, cellSize);
 
-        // Draw number code if enabled
         if (showNumbers) {
             ctx.fillStyle = getTextColor(color.hex);
-            // Center text in cell
             ctx.fillText(color.code, posX + cellSize/2, posY + cellSize/2);
         }
     });
@@ -82,6 +80,7 @@ const DesktopEditor: React.FC = () => {
   const location = useLocation();
   const { id } = useParams();
   const [searchParams] = useSearchParams();
+  const { user, isAuthenticated } = useAuth();
   const state = location.state as { grid?: {[key: string]: string}, width?: number, height?: number, title?: string, minX?: number, minY?: number, isFreeMode?: boolean };
 
   const { allBeads, recentColors, addToRecent, currentPalette, paletteConfig } = useColorPalette();
@@ -109,6 +108,7 @@ const DesktopEditor: React.FC = () => {
 
   const [isRenaming, setIsRenaming] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [isSyncing, setIsSyncing] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const draftIdRef = useRef<string>((id && id !== 'new' && id !== 'imported') ? id : '');
   const [scale, setScale] = useState(1);
@@ -128,15 +128,12 @@ const DesktopEditor: React.FC = () => {
   const [showExportModal, setShowExportModal] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
   
-  // Export Settings
   const [reduceNoise, setReduceNoise] = useState(false);
-  const [detailProtection, setDetailProtection] = useState(30); // Default to 30
+  const [detailProtection, setDetailProtection] = useState(30); 
 
-  // Conversion States
   const [showConvertConfirm, setShowConvertConfirm] = useState(false);
   const [showConvertSuccess, setShowConvertSuccess] = useState(false);
 
-  // Bead Mode State
   const [isBeadMode, setIsBeadMode] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(0);
   
@@ -160,28 +157,47 @@ const DesktopEditor: React.FC = () => {
   useEffect(() => { if (state?.grid && history.length === 1 && Object.keys(history[0]).length === 0) { setHistory([state.grid]); setHistoryIndex(0); } }, []);
   useEffect(() => { autoSaveRef.current = { grid, title, bounds, isFreeMode, offset, scale }; }, [grid, title, bounds, isFreeMode, offset, scale]);
 
+  // Initial Load Strategy: Local > Cloud (Same as Mobile)
   useEffect(() => {
     if (!state?.grid && id && id !== 'new' && id !== 'imported') {
-       try {
-         const drafts = JSON.parse(localStorage.getItem('pixelbead_drafts') || '[]');
-         const draft = drafts.find((d: any) => d.id === id);
-         if (draft) {
-           setGrid(draft.grid); setTitle(draft.title); setHistory([draft.grid]); setHistoryIndex(0);
-           setIsFreeMode(draft.isFreeMode ?? (draft.width === 100));
-           setBounds({ minX: draft.minX ?? 0, minY: draft.minY ?? 0, maxX: draft.minX !== undefined ? (draft.minX + draft.width) : draft.width, maxY: draft.minY !== undefined ? (draft.minY + draft.height) : draft.height });
-           if (draft.offsetX !== undefined && draft.offsetY !== undefined) {
-             setOffset({ x: draft.offsetX, y: draft.offsetY });
-             if (draft.zoom) setScale(draft.zoom);
+       const load = async () => {
+         try {
+           const localDrafts = await StorageHelper.loadDrafts();
+           const localDraft = localDrafts.find((d: any) => d.id === id);
+           
+           if (localDraft) {
+               applyDraft(localDraft);
+           } else if (isAuthenticated && user) {
+               const cloudDrafts = await StorageHelper.loadDrafts(user.id);
+               const cloudDraft = cloudDrafts.find((d: any) => d.id === id);
+               if (cloudDraft) applyDraft(cloudDraft);
            }
-         }
-       } catch (e) {}
+         } catch (e) {}
+       };
+       load();
     }
-  }, [id]);
+  }, [id, isAuthenticated, user?.id]);
 
-  useEffect(() => { const timer = setInterval(() => { if (!isBeadMode) handleSave(true); }, 10000); return () => clearInterval(timer); }, [isBeadMode]);
+  const applyDraft = (draft: any) => {
+     setGrid(draft.grid); setTitle(draft.title); setHistory([draft.grid]); setHistoryIndex(0);
+     setIsFreeMode(draft.isFreeMode ?? (draft.width === 100));
+     setBounds({ minX: draft.minX ?? 0, minY: draft.minY ?? 0, maxX: draft.minX !== undefined ? (draft.minX + draft.width) : draft.width, maxY: draft.minY !== undefined ? (draft.minY + draft.height) : draft.height });
+     if (draft.offsetX !== undefined && draft.offsetY !== undefined) {
+       setOffset({ x: draft.offsetX, y: draft.offsetY });
+       if (draft.zoom) setScale(draft.zoom);
+     }
+  };
+
+  // Auto-Save: LOCAL ONLY
+  useEffect(() => { 
+      const timer = setInterval(() => { 
+          if (!isBeadMode) performSave('local'); 
+      }, 10000); 
+      return () => clearInterval(timer); 
+  }, [isBeadMode]);
+
   useEffect(() => { if (isRenaming && titleInputRef.current) titleInputRef.current.focus(); }, [isRenaming]);
 
-  // Timer Effect
   useEffect(() => {
     let interval: any;
     if (isBeadMode) {
@@ -199,6 +215,7 @@ const DesktopEditor: React.FC = () => {
       return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  // Ruler Logic (Omitted details for brevity, identical to prev)
   useEffect(() => {
     const canvas = rulerCanvasRef.current; const container = mainContainerRef.current;
     if (!canvas || !container) return;
@@ -247,8 +264,7 @@ const DesktopEditor: React.FC = () => {
     updateRulers(); window.addEventListener('resize', updateRulers); return () => window.removeEventListener('resize', updateRulers);
   }, [scale, offset, bounds]);
 
-  const handleSave = (silent = false) => {
-    setSaveStatus('saving');
+  const prepareDraftObject = () => {
     const currentData = autoSaveRef.current;
     let currentId = draftIdRef.current || Date.now().toString(); draftIdRef.current = currentId;
     const width = currentData.bounds.maxX - currentData.bounds.minX;
@@ -264,33 +280,49 @@ const DesktopEditor: React.FC = () => {
         if (color) { ctx.fillStyle = color.hex; ctx.fillRect((x - currentData.bounds.minX) * thumbSize, (y - currentData.bounds.minY) * thumbSize, thumbSize, thumbSize); }
       });
     }
-    const draft: Draft = { id: currentId, title: currentData.title, grid: currentData.grid, width, height, minX: currentData.bounds.minX, minY: currentData.bounds.minY, isFreeMode: currentData.isFreeMode, offsetX: currentData.offset.x, offsetY: currentData.offset.y, zoom: currentData.scale, lastModified: Date.now(), thumbnail: canvas.toDataURL('image/png', 0.5) };
-    try {
-      const drafts = JSON.parse(localStorage.getItem('pixelbead_drafts') || '[]');
-      const idx = drafts.findIndex((d: Draft) => d.id === draft.id);
-      if (idx >= 0) drafts[idx] = draft; else drafts.unshift(draft);
-      localStorage.setItem('pixelbead_drafts', JSON.stringify(drafts));
-      setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000);
-    } catch (e) { setSaveStatus('idle'); }
+    return { id: currentId, title: currentData.title, grid: currentData.grid, width, height, minX: currentData.bounds.minX, minY: currentData.bounds.minY, isFreeMode: currentData.isFreeMode, offsetX: currentData.offset.x, offsetY: currentData.offset.y, zoom: currentData.scale, lastModified: Date.now(), thumbnail: canvas.toDataURL('image/png', 0.5) };
   };
 
-  const handleExportClick = () => { handleSave(true); setShowExportModal(true); };
+  const performSave = async (mode: 'local' | 'cloud', feedback = false) => {
+      const draft = prepareDraftObject();
+      if (mode === 'local') {
+          StorageHelper.saveLocalCache(draft);
+          if (feedback) { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 1000); }
+      } else {
+          if (feedback) setSaveStatus('saving');
+          await StorageHelper.saveDraft(draft, isAuthenticated && user ? user.id : undefined);
+          if (feedback) { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000); }
+      }
+  };
 
+  const handleManualSave = () => {
+      performSave('cloud', true);
+  };
+
+  const handleBack = async () => {
+      if (isAuthenticated) {
+          setIsSyncing(true);
+          await performSave('cloud', false);
+          setIsSyncing(false);
+          navigate('/create');
+      } else {
+          performSave('local', false);
+          navigate('/create');
+      }
+  };
+
+  const handleExportClick = () => { performSave('local', false); setShowExportModal(true); };
+
+  // ... [Handlers omit for brevity] ...
   const handleMirror = () => {
     const width = bounds.maxX - bounds.minX;
     const newGrid: {[key: string]: string} = {};
-    
     Object.entries(grid).forEach(([key, colorId]) => {
         const [x, y] = key.split(',').map(Number);
-        // Horizontal flip: 
-        // 1. Get relative x from the left edge (bounds.minX)
-        // 2. Flip it within the width
-        // 3. Add back to bounds.minX
         if (isNaN(x) || isNaN(y)) return;
         const newX = bounds.minX + (width - 1) - (x - bounds.minX);
         newGrid[`${newX},${y}`] = colorId as string;
     });
-    
     setGrid(newGrid);
     commitHistory(newGrid);
   };
@@ -300,7 +332,7 @@ const DesktopEditor: React.FC = () => {
       setIsConverting(true);
       setShowConvertConfirm(false);
 
-      setTimeout(() => {
+      setTimeout(async () => {
           const paletteCache = currentPalette.map(bead => {
               const rgb = hexToRgb(bead.hex);
               return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) };
@@ -312,22 +344,16 @@ const DesktopEditor: React.FC = () => {
               if (originalBead) {
                   const rgb = hexToRgb(originalBead.hex);
                   const currentLab = rgbToLab(rgb.r, rgb.g, rgb.b);
-                  
                   let minDistance = Infinity;
                   let closestBead = paletteCache[0];
-                  
                   for (const p of paletteCache) {
                       const dist = deltaE(currentLab, p.lab);
-                      if (dist < minDistance) {
-                          minDistance = dist;
-                          closestBead = p;
-                      }
+                      if (dist < minDistance) { minDistance = dist; closestBead = p; }
                   }
                   newGrid[key] = closestBead.id;
               }
           });
 
-          // Generate Draft Copy
           const width = bounds.maxX - bounds.minX;
           const height = bounds.maxY - bounds.minY;
           const canvas = document.createElement('canvas');
@@ -363,9 +389,7 @@ const DesktopEditor: React.FC = () => {
           };
 
           try {
-              const drafts = JSON.parse(localStorage.getItem('pixelbead_drafts') || '[]');
-              drafts.unshift(newDraft);
-              localStorage.setItem('pixelbead_drafts', JSON.stringify(drafts));
+              await StorageHelper.saveDraft(newDraft, isAuthenticated && user ? user.id : undefined);
               setShowConvertSuccess(true);
           } catch (e) {
               alert('保存副本失败，请检查存储空间');
@@ -379,45 +403,30 @@ const DesktopEditor: React.FC = () => {
      setIsConverting(true);
      setTimeout(() => {
         const width = bounds.maxX - bounds.minX; const height = bounds.maxY - bounds.minY;
-        
-        // 1. Prepare base grid (optionally denoised)
         let processedGrid = { ...grid };
         if (reduceNoise) {
-            // Updated to use the adjustable threshold
-            // protection 100 => threshold 0 (Keep all)
-            // protection 0 => threshold 100 (Keep only huge contrasts)
             const threshold = 100 - detailProtection;
             processedGrid = denoiseGrid(processedGrid, bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, allBeadsMap, threshold);
         }
-
         let exportGrid: {[key: string]: string} = {};
         if (shouldMapColors) {
             if (!currentPalette || currentPalette.length === 0) { alert("当前选择的套装为空"); setIsConverting(false); return; }
             const paletteCache = currentPalette.map(bead => { const rgb = hexToRgb(bead.hex); return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) }; });
-            
-            // Iterate directly over grid items for O(N) performance instead of O(W*H)
             Object.entries(processedGrid).forEach(([key, colorId]) => {
                 const [gx, gy] = key.split(',').map(Number);
                 const x = gx - bounds.minX;
                 const y = gy - bounds.minY;
-                
                 if (x >= 0 && x < width && y >= 0 && y < height) {
                     const originalBead = allBeadsMap[colorId as string];
                     if (originalBead) {
                         const rgb = hexToRgb(originalBead.hex);
                         const currentLab = rgbToLab(rgb.r, rgb.g, rgb.b);
-                        
                         let minDistance = Infinity;
                         let closestBead = paletteCache[0];
-                        
                         for (const p of paletteCache) {
                             const dist = deltaE(currentLab, p.lab);
-                            if (dist < minDistance) {
-                                minDistance = dist;
-                                closestBead = p;
-                            }
+                            if (dist < minDistance) { minDistance = dist; closestBead = p; }
                         }
-                        
                         exportGrid[`${x},${y}`] = closestBead.id;
                     }
                 }
@@ -449,7 +458,6 @@ const DesktopEditor: React.FC = () => {
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-      // In Bead Mode, force drag/pan behavior regardless of button or tool
       if (e.button === 1 || tool === 'move' || isBeadMode) { isDragging.current = true; lastPos.current = { x: e.clientX, y: e.clientY }; return; }
       const {x, y} = getGridCoord(e.clientX, e.clientY); handleCellAction(x, y);
   };
@@ -466,7 +474,6 @@ const DesktopEditor: React.FC = () => {
   const handleCellAction = (x: number, y: number) => {
     if (tool === 'move' || !selectedBead || isBeadMode) return;
     
-    // Auto-expand logic for Free Mode
     if (isFreeMode) {
         let newMinX = bounds.minX;
         let newMaxX = bounds.maxX;
@@ -477,24 +484,20 @@ const DesktopEditor: React.FC = () => {
         let addedTop = 0;
         const EXPAND_CHUNK = 10;
 
-        // Expand Left (Negative X)
         if (x < bounds.minX + 2) { 
             newMinX = bounds.minX - EXPAND_CHUNK; 
             addedLeft = EXPAND_CHUNK; 
             changed = true; 
         }
-        // Expand Right (Positive X)
         if (x >= bounds.maxX - 2) { 
             newMaxX = bounds.maxX + EXPAND_CHUNK; 
             changed = true; 
         }
-        // Expand Top (Negative Y)
         if (y < bounds.minY + 2) { 
             newMinY = bounds.minY - EXPAND_CHUNK; 
             addedTop = EXPAND_CHUNK; 
             changed = true; 
         }
-        // Expand Bottom (Positive Y)
         if (y >= bounds.maxY - 2) { 
             newMaxY = bounds.maxY + EXPAND_CHUNK; 
             changed = true; 
@@ -502,7 +505,6 @@ const DesktopEditor: React.FC = () => {
 
         if (changed) {
             setBounds({ minX: newMinX, maxX: newMaxX, minY: newMinY, maxY: newMaxY });
-            // Seamless expansion: Adjust offset to counteract the bounds change
             if (addedLeft > 0 || addedTop > 0) {
                 setOffset(prev => ({ 
                     x: prev.x - (addedLeft * CELL_SIZE * scale), 
@@ -511,7 +513,6 @@ const DesktopEditor: React.FC = () => {
             }
         }
     } else {
-        // Fixed Mode: Boundary Check
         if (x < bounds.minX || y < bounds.minY || x >= bounds.maxX || y >= bounds.maxY) return;
     }
 
@@ -523,11 +524,9 @@ const DesktopEditor: React.FC = () => {
     else if (tool === 'picker') { const colorId = grid[key]; if (colorId) { const found = allBeadsMap[colorId]; if (found) { setSelectedBead(found); addToRecent(found); setTool('pen'); } } isDrawing.current = false; }
     else if (tool === 'fill') {
       const targetColor = grid[key]; if (targetColor === selectedBead.id) return;
-      
       const queue: [number, number][] = [[x, y]];
       const visited: Set<string> = new Set<string>([key]);
       let safety: number = 0;
-      
       while (queue.length > 0 && safety < 2000) {
         const next: [number, number] | undefined = queue.shift();
         if (!next) break;
@@ -536,22 +535,16 @@ const DesktopEditor: React.FC = () => {
           newGrid[`${cx},${cy}`] = selectedBead.id;
         }
         safety++;
-        
         const neighbors: [number, number][] = [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]];
         neighbors.forEach(([nx, ny]) => {
            const nKey: string = `${nx},${ny}`;
            if (!isFreeMode && (nx < bounds.minX || ny < bounds.minY || nx >= bounds.maxX || ny >= bounds.maxY)) return;
-           
            if (!visited.has(nKey)) {
              const neighborColor: string | undefined = grid[nKey];
              if (targetColor === undefined) {
-               if (neighborColor === undefined) {
-                 visited.add(nKey);
-                 queue.push([nx, ny]);
-               }
+               if (neighborColor === undefined) { visited.add(nKey); queue.push([nx, ny]); }
              } else if (neighborColor === targetColor) {
-               visited.add(nKey);
-               queue.push([nx, ny]);
+               visited.add(nKey); queue.push([nx, ny]);
              }
            }
         });
@@ -561,14 +554,24 @@ const DesktopEditor: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 overflow-hidden select-none">
+    <div className="flex h-screen w-full bg-slate-50 overflow-hidden select-none relative">
+       
+       {/* Sync Overlay */}
+       {isSyncing && (
+           <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+               <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin mb-4"></div>
+               <div className="font-bold text-lg">正在同步云端</div>
+               <div className="text-sm text-white/60 mt-1">请勿关闭页面...</div>
+           </div>
+       )}
+
        {/* Sidebar - Hidden in Bead Mode */}
        {!isBeadMode && (
            <div className="w-72 bg-white border-r border-slate-200 flex flex-col shrink-0 z-20 shadow-sm transition-all duration-300">
               <div className="p-4 border-b border-slate-100 flex items-center gap-2">
-                 <button onClick={() => navigate('/create')} className="hover:bg-slate-100 p-1 rounded-full text-slate-500"><span className="material-symbols-outlined">arrow_back</span></button>
+                 <button onClick={handleBack} className="hover:bg-slate-100 p-1 rounded-full text-slate-500"><span className="material-symbols-outlined">arrow_back</span></button>
                  {isRenaming ? (
-                   <input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} onBlur={() => { setIsRenaming(false); handleSave(true); }} onKeyDown={(e) => e.key === 'Enter' && setIsRenaming(false)} className="font-bold text-gray-900 bg-slate-100 px-2 py-0.5 rounded w-full outline-none" autoFocus />
+                   <input ref={titleInputRef} value={title} onChange={(e) => setTitle(e.target.value)} onBlur={() => { setIsRenaming(false); performSave('local'); }} onKeyDown={(e) => e.key === 'Enter' && setIsRenaming(false)} className="font-bold text-gray-900 bg-slate-100 px-2 py-0.5 rounded w-full outline-none" autoFocus />
                  ) : (
                    <h1 onClick={() => setIsRenaming(true)} className="font-bold text-gray-900 truncate cursor-text hover:bg-slate-50 px-2 py-0.5 rounded">{title}</h1>
                  )}
@@ -617,7 +620,7 @@ const DesktopEditor: React.FC = () => {
                       <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className="p-2 rounded-full hover:bg-slate-100 disabled:opacity-30 transition-colors text-slate-600"><span className="material-symbols-outlined">redo</span></button>
                       <button onClick={handleMirror} className="p-2 rounded-full text-slate-600 hover:text-primary hover:bg-slate-50 transition-colors" title="水平镜像"><span className="material-symbols-outlined text-[20px]">flip</span></button>
                       <button onClick={() => setShowConvertConfirm(true)} className="p-2 rounded-full text-slate-600 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="转换色彩"><span className="material-symbols-outlined text-[20px]">auto_fix_high</span></button>
-                      <button onClick={() => handleSave(false)} className={`p-2 rounded-full hover:bg-slate-100 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
+                      <button onClick={handleManualSave} className={`p-2 rounded-full hover:bg-slate-100 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
                       <button onClick={() => { setIsBeadMode(true); setTimerSeconds(0); }} className="p-2 rounded-full text-primary hover:bg-blue-50 transition-colors" title="拼豆模式"><span className="material-symbols-outlined text-[20px]">spa</span></button>
                       <div className="w-[1px] h-6 bg-slate-200 mx-2"></div>
                       <button onClick={handleExportClick} className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-blue-600 transition-colors shadow-sm shadow-blue-500/30"><span className="material-symbols-outlined text-[20px]">ios_share</span><span className="text-sm font-bold">导出</span></button>
@@ -672,11 +675,10 @@ const DesktopEditor: React.FC = () => {
           </div>
        </div>
        <PaletteModal isOpen={isPaletteOpen} onClose={() => setIsPaletteOpen(false)} onSelect={(c) => { setSelectedBead(c); addToRecent(c); setIsPaletteOpen(false); setTool('pen'); }} />
-       
-       {/* Color Conversion Confirmation Modal */}
        {showConvertConfirm && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6">
+                {/* ... [Re-include convert dialog content] ... */}
                 <div className="flex flex-col items-center mb-4">
                     <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center mb-3">
                         <span className="material-symbols-outlined text-2xl">auto_fix_high</span>
@@ -698,8 +700,6 @@ const DesktopEditor: React.FC = () => {
             </div>
          </div>
        )}
-
-       {/* Success Modal */}
        {showConvertSuccess && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6 flex flex-col items-center">
@@ -716,7 +716,6 @@ const DesktopEditor: React.FC = () => {
             </div>
          </div>
        )}
-
        {showExportModal && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full max-w-md rounded-2xl shadow-2xl p-6">
@@ -728,7 +727,6 @@ const DesktopEditor: React.FC = () => {
                     <div className="flex flex-col items-center justify-center py-8"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-3"></div><p className="text-sm text-gray-500">正在生成预览...</p></div>
                 ) : (
                     <div className="space-y-4">
-                        {/* Noise Reduction Toggle & Slider */}
                         <div className="flex flex-col p-4 bg-slate-50 dark:bg-[#1e1e30] rounded-xl border border-slate-100 dark:border-slate-700">
                             <div className="flex items-center justify-between mb-2">
                                 <div className="flex flex-col">
@@ -742,8 +740,6 @@ const DesktopEditor: React.FC = () => {
                                     <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 ${reduceNoise ? 'translate-x-6' : 'translate-x-0'}`}></div>
                                 </div>
                             </div>
-                            
-                            {/* Detail Protection Slider */}
                             {reduceNoise && (
                                 <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600 animate-fade-in">
                                     <div className="flex justify-between items-center mb-1">
@@ -765,7 +761,6 @@ const DesktopEditor: React.FC = () => {
                                 </div>
                             )}
                         </div>
-
                         <button onClick={() => processExport(false)} className="w-full flex items-center p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#1e1e30] hover:bg-white dark:hover:bg-gray-800 hover:shadow-md transition-all group">
                             <div className="h-12 w-12 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400 group-hover:scale-110 transition-transform"><span className="material-symbols-outlined">palette</span></div>
                             <div className="ml-4 flex-1 text-left"><h4 className="font-bold text-gray-900 dark:text-white">原始色彩导出</h4><p className="text-xs text-gray-500 mt-1">保留绘制时使用的所有原始颜色</p></div>

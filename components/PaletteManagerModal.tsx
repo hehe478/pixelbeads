@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useColorPalette } from '../context/ColorContext';
+import { useAuth } from '../context/AuthContext';
 
 interface PaletteManagerModalProps {
   isOpen: boolean;
@@ -19,8 +21,11 @@ const PaletteManagerModal: React.FC<PaletteManagerModalProps> = ({ isOpen, onClo
     updateCustomPaletteBeads,
     paletteConfig,
     allBeads,
-    availableBrands
+    availableBrands,
+    importPalettes,
+    syncToCloud
   } = useColorPalette();
+  const { isAuthenticated } = useAuth();
 
   const [view, setView] = useState<ViewMode>('list');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -28,8 +33,13 @@ const PaletteManagerModal: React.FC<PaletteManagerModalProps> = ({ isOpen, onClo
   const [editName, setEditName] = useState('');
   const [activeBrand, setActiveBrand] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // Export/Import State
+  const [isExportMode, setIsExportMode] = useState(false);
+  const [selectedForExport, setSelectedForExport] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showSyncToast, setShowSyncToast] = useState(false);
 
-  // Rules of Hooks: All hooks must be at the top level
   const displayBeads = useMemo(() => allBeads.filter(bead => {
     if (!activeBrand) return false;
     return bead.brand === activeBrand && (searchTerm === '' || bead.code?.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -48,6 +58,8 @@ const PaletteManagerModal: React.FC<PaletteManagerModalProps> = ({ isOpen, onClo
         setView('list');
         setContentEditingId(null);
         setEditingId(null);
+        setIsExportMode(false);
+        setSelectedForExport([]);
     }
   }, [isOpen]);
 
@@ -56,6 +68,19 @@ const PaletteManagerModal: React.FC<PaletteManagerModalProps> = ({ isOpen, onClo
         setActiveBrand(availableBrands[0]);
     }
   }, [view, availableBrands, activeBrand]);
+
+  const handleClose = async () => {
+      if (isAuthenticated) {
+          setShowSyncToast(true);
+          await syncToCloud();
+          setTimeout(() => {
+              setShowSyncToast(false);
+              onClose();
+          }, 1000);
+      } else {
+          onClose();
+      }
+  };
 
   // Early return must come AFTER all hook declarations
   if (!isOpen) return null;
@@ -68,8 +93,46 @@ const PaletteManagerModal: React.FC<PaletteManagerModalProps> = ({ isOpen, onClo
   };
 
   const handleSelect = (id: string) => {
-    selectCustomPalette(id);
-    onClose();
+    if (isExportMode) {
+        setSelectedForExport(prev => 
+            prev.includes(id) ? prev.filter(pid => pid !== id) : [...prev, id]
+        );
+    } else {
+        selectCustomPalette(id);
+        onClose();
+    }
+  };
+
+  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+              if (ev.target?.result) {
+                  importPalettes(ev.target.result as string);
+              }
+          };
+          reader.readAsText(file);
+      }
+      // Reset input
+      if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleExport = () => {
+      const palettesToExport = customPalettes.filter(p => selectedForExport.includes(p.id));
+      if (palettesToExport.length === 0) {
+          alert('请至少选择一个方案');
+          return;
+      }
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(palettesToExport));
+      const downloadAnchorNode = document.createElement('a');
+      downloadAnchorNode.setAttribute("href", dataStr);
+      downloadAnchorNode.setAttribute("download", `pixelbead_palettes_${Date.now()}.json`);
+      document.body.appendChild(downloadAnchorNode);
+      downloadAnchorNode.click();
+      downloadAnchorNode.remove();
+      setIsExportMode(false);
+      setSelectedForExport([]);
   };
 
   const getPalettePreview = (beadIds: string[] = []) => {
@@ -123,15 +186,11 @@ const PaletteManagerModal: React.FC<PaletteManagerModalProps> = ({ isOpen, onClo
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 material-symbols-outlined text-[18px]">search</span>
                     <input type="text" placeholder="搜索色号..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-white dark:bg-surface-dark border border-gray-200 dark:border-gray-700 rounded-lg pl-9 py-2 text-sm text-gray-900 dark:text-white"/>
                 </div>
-                
-                {/* Brand Tabs with custom scrollbar */}
                 <div className="flex gap-2 overflow-x-auto pb-2 custom-horizontal-scrollbar">
                     {availableBrands.map(brand => (
                     <button key={brand} onClick={() => setActiveBrand(brand)} className={`px-3 py-1 rounded-full text-xs font-bold transition-all border shrink-0 ${activeBrand === brand ? 'bg-primary border-primary text-white' : 'bg-white dark:bg-transparent border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100'}`}>{brand}</button>
                     ))}
                 </div>
-
-                {/* Shortcut row with custom scrollbar */}
                 <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-horizontal-scrollbar">
                     <span className="text-[10px] text-gray-400 font-bold uppercase shrink-0">快捷:</span>
                     {availableSetsForBrand.map(setSize => {
@@ -166,46 +225,100 @@ const PaletteManagerModal: React.FC<PaletteManagerModalProps> = ({ isOpen, onClo
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
-      <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[80vh]">
+      <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[80vh] relative">
+        {/* Warning Banner */}
+        <div className="bg-amber-50 dark:bg-amber-900/20 px-4 py-2 border-b border-amber-100 dark:border-amber-900/30 flex items-center gap-2 shrink-0">
+            <span className="material-symbols-outlined text-amber-500 text-sm">warning</span>
+            <span className="text-[10px] text-amber-700 dark:text-amber-400 font-medium">请及时导出备份，避免浏览器清理缓存导致数据丢失。</span>
+        </div>
+
+        {/* Sync Overlay */}
+        {showSyncToast && (
+            <div className="absolute inset-0 z-50 bg-white/80 dark:bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                <div className="bg-black/80 text-white px-4 py-2 rounded-full font-bold flex items-center gap-2">
+                    <span className="material-symbols-outlined animate-spin text-sm">sync</span>
+                    正在同步至云端...
+                </div>
+            </div>
+        )}
+
         {view === 'edit_content' ? renderContentEditor() : (
             <>
                 <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-white dark:bg-surface-dark shrink-0">
-                <h3 className="font-bold text-lg text-gray-900 dark:text-white">我的色盘库</h3>
-                <button onClick={onClose} className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"><span className="material-symbols-outlined text-gray-500">close</span></button>
+                    <h3 className="font-bold text-lg text-gray-900 dark:text-white">{isExportMode ? '选择要导出的方案' : '我的色盘库'}</h3>
+                    <button onClick={handleClose} className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"><span className="material-symbols-outlined text-gray-500">close</span></button>
                 </div>
+                
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50 dark:bg-black/20">
-                <button onClick={handleCreate} className="w-full flex items-center justify-center gap-2 p-3 rounded-xl border-2 border-dashed border-primary/30 text-primary hover:bg-primary/5 group mb-2">
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center group-hover:scale-110 transition-transform"><span className="material-symbols-outlined text-[20px]">add</span></div>
-                    <span className="font-bold text-sm">创建新配色方案</span>
-                </button>
-                {customPalettes.map(palette => {
-                    const isActive = paletteConfig.activeCustomId === palette.id;
-                    const brandLabel = getPaletteBrand(palette.beadIds);
-                    return (
-                    <div key={palette.id} className={`group relative p-3 rounded-xl border transition-all ${isActive ? 'bg-white dark:bg-surface-dark border-primary shadow-sm ring-1 ring-primary' : 'bg-white dark:bg-surface-dark border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}>
-                        <div className="flex items-center justify-between mb-2">
-                        {editingId === palette.id ? (
-                            <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} onBlur={() => saveRenaming(palette.id)} onKeyDown={(e) => e.key === 'Enter' && saveRenaming(palette.id)} className="text-sm font-bold bg-gray-100 dark:bg-black/20 rounded px-2 py-1 w-full mr-2" autoFocus/>
-                        ) : (
-                            <div className="flex items-center gap-2 overflow-hidden flex-1">
-                                <span onClick={() => handleSelect(palette.id)} className="font-bold text-gray-800 dark:text-white truncate cursor-pointer text-sm">{palette.name}</span>
-                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${brandLabel === '自定义' ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-500'}`}>{brandLabel}</span>
+                    {!isExportMode && (
+                        <button onClick={handleCreate} className="w-full flex items-center justify-center gap-2 p-3 rounded-xl border-2 border-dashed border-primary/30 text-primary hover:bg-primary/5 group mb-2">
+                            <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center group-hover:scale-110 transition-transform"><span className="material-symbols-outlined text-[20px]">add</span></div>
+                            <span className="font-bold text-sm">创建新配色方案</span>
+                        </button>
+                    )}
+                    
+                    {customPalettes.map(palette => {
+                        const isActive = paletteConfig.activeCustomId === palette.id;
+                        const isSelected = selectedForExport.includes(palette.id);
+                        const brandLabel = getPaletteBrand(palette.beadIds);
+                        
+                        return (
+                        <div key={palette.id} className={`group relative p-3 rounded-xl border transition-all ${isExportMode ? (isSelected ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-500' : 'bg-white border-gray-200') : (isActive ? 'bg-white dark:bg-surface-dark border-primary shadow-sm ring-1 ring-primary' : 'bg-white dark:bg-surface-dark border-gray-200 dark:border-gray-700 hover:border-gray-300')}`}>
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2 overflow-hidden flex-1">
+                                    {isExportMode && (
+                                        <div onClick={() => handleSelect(palette.id)} className={`w-5 h-5 rounded border flex items-center justify-center cursor-pointer ${isSelected ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white border-gray-300'}`}>
+                                            {isSelected && <span className="material-symbols-outlined text-sm">check</span>}
+                                        </div>
+                                    )}
+                                    <div className="flex flex-col overflow-hidden">
+                                        {!isExportMode && editingId === palette.id ? (
+                                            <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} onBlur={() => saveRenaming(palette.id)} onKeyDown={(e) => e.key === 'Enter' && saveRenaming(palette.id)} className="text-sm font-bold bg-gray-100 dark:bg-black/20 rounded px-2 py-1 w-full mr-2" autoFocus/>
+                                        ) : (
+                                            <span onClick={() => handleSelect(palette.id)} className="font-bold text-gray-800 dark:text-white truncate cursor-pointer text-sm">{palette.name}</span>
+                                        )}
+                                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium self-start mt-0.5 ${brandLabel === '自定义' ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-500'}`}>{brandLabel}</span>
+                                    </div>
+                                </div>
+                                {!isExportMode && (
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        <button onClick={() => { setContentEditingId(palette.id); setView('edit_content'); }} className="p-1.5 rounded-full hover:bg-blue-50 text-blue-500" title="编辑颜色"><span className="material-symbols-outlined text-[18px]">palette</span></button>
+                                        <button onClick={() => { setEditingId(palette.id); setEditName(palette.name); }} className="p-1.5 rounded-full hover:bg-gray-100 text-gray-400" title="重命名"><span className="material-symbols-outlined text-[18px]">edit_note</span></button>
+                                        <button onClick={() => deleteCustomPalette(palette.id)} className="p-1.5 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-500" title="删除"><span className="material-symbols-outlined text-[18px]">delete</span></button>
+                                    </div>
+                                )}
                             </div>
-                        )}
-                        <div className="flex items-center gap-1 shrink-0">
-                            <button onClick={() => { setContentEditingId(palette.id); setView('edit_content'); }} className="p-1.5 rounded-full hover:bg-blue-50 text-blue-500" title="编辑颜色"><span className="material-symbols-outlined text-[18px]">palette</span></button>
-                            <button onClick={() => { setEditingId(palette.id); setEditName(palette.name); }} className="p-1.5 rounded-full hover:bg-gray-100 text-gray-400" title="重命名"><span className="material-symbols-outlined text-[18px]">edit_note</span></button>
-                            <button onClick={() => deleteCustomPalette(palette.id)} className="p-1.5 rounded-full hover:bg-red-50 text-gray-400 hover:text-red-500" title="删除"><span className="material-symbols-outlined text-[18px]">delete</span></button>
+                            <div onClick={() => handleSelect(palette.id)} className="flex items-center justify-between cursor-pointer mt-1 pl-1">
+                                <div className="flex gap-1.5 items-center">{getPalettePreview(palette.beadIds)}</div>
+                                <span className="text-[10px] text-gray-400">{(palette.beadIds || []).length} 色</span>
+                            </div>
+                            {!isExportMode && isActive && <div className="absolute -top-1.5 -right-1.5 bg-primary text-white text-[10px] w-4 h-4 flex items-center justify-center rounded-full shadow-sm"><span className="material-symbols-outlined text-[10px]">check</span></div>}
                         </div>
-                        </div>
-                        <div onClick={() => handleSelect(palette.id)} className="flex items-center justify-between cursor-pointer mt-1">
-                            <div className="flex gap-1.5 items-center">{getPalettePreview(palette.beadIds)}</div>
-                            <span className="text-[10px] text-gray-400">{(palette.beadIds || []).length} 色</span>
-                        </div>
-                        {isActive && <div className="absolute -top-1.5 -right-1.5 bg-primary text-white text-[10px] w-4 h-4 flex items-center justify-center rounded-full shadow-sm"><span className="material-symbols-outlined text-[10px]">check</span></div>}
-                    </div>
-                    );
-                })}
+                        );
+                    })}
+                </div>
+
+                {/* Footer Actions */}
+                <div className="p-3 bg-white dark:bg-surface-dark border-t border-gray-100 dark:border-gray-700 flex gap-3 shrink-0">
+                    <input type="file" accept=".json" className="hidden" ref={fileInputRef} onChange={handleFileImport} />
+                    
+                    {isExportMode ? (
+                        <>
+                            <button onClick={() => { setIsExportMode(false); setSelectedForExport([]); }} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-gray-600 font-bold text-xs">取消</button>
+                            <button onClick={handleExport} disabled={selectedForExport.length === 0} className="flex-[2] py-2.5 rounded-xl bg-primary text-white font-bold text-xs shadow-lg shadow-primary/30 disabled:opacity-50">
+                                导出选中 ({selectedForExport.length})
+                            </button>
+                        </>
+                    ) : (
+                        <>
+                            <button onClick={() => fileInputRef.current?.click()} className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300 font-bold text-xs hover:bg-slate-200 transition-colors flex items-center justify-center gap-1">
+                                <span className="material-symbols-outlined text-sm">upload</span> 导入
+                            </button>
+                            <button onClick={() => setIsExportMode(true)} className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300 font-bold text-xs hover:bg-slate-200 transition-colors flex items-center justify-center gap-1">
+                                <span className="material-symbols-outlined text-sm">download</span> 导出
+                            </button>
+                        </>
+                    )}
                 </div>
             </>
         )}

@@ -1,7 +1,10 @@
+
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { beadsData } from '../data/beads_data';
 import { BeadColor, BeadRaw, PaletteConfig, CustomPalette } from '../types';
 import { rgbToHex } from '../utils/colors';
+import { useAuth } from './AuthContext';
+import { PaletteAPI } from '../utils/mockBackend';
 
 interface ColorContextType {
   allBeads: BeadColor[];
@@ -24,6 +27,8 @@ interface ColorContextType {
   deleteCustomPalette: (id: string) => void;
   selectCustomPalette: (id: string) => void;
   getActiveCustomPalette: () => CustomPalette | undefined;
+  importPalettes: (jsonString: string) => void;
+  syncToCloud: () => Promise<void>;
 }
 
 const ColorContext = createContext<ColorContextType | undefined>(undefined);
@@ -48,6 +53,8 @@ const DEFAULT_CONFIG: PaletteConfig = {
 };
 
 export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isAuthenticated } = useAuth();
+
   const [paletteConfig, setPaletteConfig] = useState<PaletteConfig>(() => {
     try {
       const saved = localStorage.getItem('pixelbead_palette_config');
@@ -70,20 +77,49 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   });
 
-  const [customPalettes, setCustomPalettes] = useState<CustomPalette[]>(() => {
-    try {
-      const saved = localStorage.getItem('pixelbead_custom_palettes');
-      const parsed = saved ? JSON.parse(saved) : [];
-      // Ensure every palette has a valid beadIds array to prevent crashes
-      return Array.isArray(parsed) ? parsed.map((p: any) => ({
-        ...p,
-        beadIds: Array.isArray(p.beadIds) ? p.beadIds : []
-      })) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [customPalettes, setCustomPalettes] = useState<CustomPalette[]>([]);
+  // Use a flag to avoid saving empty state to local storage during initial load
+  const [isInitialized, setIsInitialized] = useState(false);
 
+  // 初始化：根据登录状态加载数据
+  useEffect(() => {
+    const loadPalettes = async () => {
+      setIsInitialized(false);
+      if (isAuthenticated && user) {
+        try {
+          const cloudData = await PaletteAPI.getUserPalettes(user.id);
+          setCustomPalettes(cloudData);
+        } catch (e) {
+          console.error("Failed to load cloud palettes", e);
+          // Fallback or error handling
+        }
+      } else {
+        // Not logged in: Load from LocalStorage
+        try {
+          const saved = localStorage.getItem('pixelbead_custom_palettes');
+          const parsed = saved ? JSON.parse(saved) : [];
+          setCustomPalettes(Array.isArray(parsed) ? parsed.map((p: any) => ({
+            ...p,
+            beadIds: Array.isArray(p.beadIds) ? p.beadIds : []
+          })) : []);
+        } catch {
+          setCustomPalettes([]);
+        }
+      }
+      setIsInitialized(true);
+    };
+
+    loadPalettes();
+  }, [isAuthenticated, user?.id]);
+
+  // 监听变化：未登录时保存到 LocalStorage
+  useEffect(() => {
+    if (!isAuthenticated && isInitialized) {
+      localStorage.setItem('pixelbead_custom_palettes', JSON.stringify(customPalettes));
+    }
+  }, [customPalettes, isAuthenticated, isInitialized]);
+
+  // 配置和最近使用的颜色总是保存在本地
   useEffect(() => {
     localStorage.setItem('pixelbead_palette_config', JSON.stringify(paletteConfig));
   }, [paletteConfig]);
@@ -92,9 +128,33 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     localStorage.setItem('pixelbead_recent_colors', JSON.stringify(recentColors.map(c => c.id)));
   }, [recentColors]);
 
-  useEffect(() => {
-    localStorage.setItem('pixelbead_custom_palettes', JSON.stringify(customPalettes));
-  }, [customPalettes]);
+  // 手动/自动同步到云端
+  const syncToCloud = async () => {
+    if (isAuthenticated && user) {
+      await PaletteAPI.saveUserPalettes(user.id, customPalettes);
+    }
+  };
+
+  const importPalettes = (jsonString: string) => {
+    try {
+      const imported = JSON.parse(jsonString);
+      if (!Array.isArray(imported)) throw new Error('Format error');
+      
+      // Basic validation and cleaning
+      const cleanPalettes: CustomPalette[] = imported.map((p: any) => ({
+        id: p.id || Date.now().toString() + Math.random(),
+        name: p.name || '导入的配色',
+        beadIds: Array.isArray(p.beadIds) ? p.beadIds : [],
+        createdAt: p.createdAt || Date.now()
+      }));
+
+      // Merge: append imported palettes
+      setCustomPalettes(prev => [...cleanPalettes, ...prev]);
+      alert(`成功导入 ${cleanPalettes.length} 个配色方案`);
+    } catch (e) {
+      alert('导入失败：文件格式不正确');
+    }
+  };
 
   const availableBrands = useMemo(() => Array.from(new Set(processedBeads.map(b => b.brand))), []);
 
@@ -231,7 +291,9 @@ export const ColorProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       renameCustomPalette,
       deleteCustomPalette,
       selectCustomPalette,
-      getActiveCustomPalette
+      getActiveCustomPalette,
+      importPalettes,
+      syncToCloud
     }}>
       {children}
     </ColorContext.Provider>

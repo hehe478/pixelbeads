@@ -1,9 +1,12 @@
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation, useSearchParams, useParams } from 'react-router-dom';
 import { Draft, BeadColor } from '../types';
 import { useColorPalette } from '../context/ColorContext';
 import { getTextColor, hexToRgb, rgbToLab, deltaE, denoiseGrid } from '../utils/colors';
 import PaletteModal from '../components/PaletteModal';
+import { useAuth } from '../context/AuthContext';
+import { StorageHelper } from '../utils/storageHelper';
 
 type Tool = 'pen' | 'eraser' | 'fill' | 'picker' | 'move';
 
@@ -82,6 +85,7 @@ const MobileEditor: React.FC = () => {
   const location = useLocation();
   const { id } = useParams();
   const [searchParams] = useSearchParams();
+  const { user, isAuthenticated } = useAuth();
   const state = location.state as { grid?: {[key: string]: string}, width?: number, height?: number, title?: string, minX?: number, minY?: number, isFreeMode?: boolean };
 
   const { allBeads, addToRecent, currentPalette, paletteConfig } = useColorPalette();
@@ -111,6 +115,7 @@ const MobileEditor: React.FC = () => {
   });
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [isSyncing, setIsSyncing] = useState(false); // For full screen blocking sync
   const draftIdRef = useRef<string>((id && id !== 'new' && id !== 'imported') ? id : '');
   
   // Canvas Transform State
@@ -136,7 +141,7 @@ const MobileEditor: React.FC = () => {
   
   // Export Settings
   const [reduceNoise, setReduceNoise] = useState(false);
-  const [detailProtection, setDetailProtection] = useState(30); // Default to 30
+  const [detailProtection, setDetailProtection] = useState(30); 
 
   // Conversion States
   const [showConvertConfirm, setShowConvertConfirm] = useState(false);
@@ -181,38 +186,55 @@ const MobileEditor: React.FC = () => {
     autoSaveRef.current = { grid, title, bounds, isFreeMode, offset, scale };
   }, [grid, title, bounds, isFreeMode, offset, scale]);
 
+  // Initial Load: Priority is local state (if passed) > Local Storage (Fast) > Cloud
   useEffect(() => {
     if (!state?.grid && id && id !== 'new' && id !== 'imported') {
-       try {
-         const drafts = JSON.parse(localStorage.getItem('pixelbead_drafts') || '[]');
-         const draft = drafts.find((d: Draft) => d.id === id);
-         if (draft) {
-           setGrid(draft.grid);
-           setTitle(draft.title);
-           setHistory([draft.grid]);
-           setHistoryIndex(0);
-           const loadedIsFree = draft.isFreeMode ?? (draft.width === 100);
-           setIsFreeMode(loadedIsFree);
-           setBounds({
-             minX: draft.minX ?? 0,
-             minY: draft.minY ?? 0,
-             maxX: draft.minX !== undefined ? (draft.minX + draft.width) : draft.width,
-             maxY: draft.minY !== undefined ? (draft.minY + draft.height) : draft.height,
-           });
-           if (draft.offsetX !== undefined && draft.offsetY !== undefined) {
-             setOffset({ x: draft.offsetX, y: draft.offsetY });
-             if (draft.zoom) setScale(draft.zoom);
+       const load = async () => {
+         try {
+           // First try local storage explicitly to be fast and safe
+           const localDrafts = await StorageHelper.loadDrafts(); // No User ID = Local
+           const localDraft = localDrafts.find((d: Draft) => d.id === id);
+           
+           if (localDraft) {
+               // If local exists, use it immediately
+               applyDraft(localDraft);
+           } else if (isAuthenticated && user) {
+               // Only fetch cloud if not found locally
+               const cloudDrafts = await StorageHelper.loadDrafts(user.id);
+               const cloudDraft = cloudDrafts.find((d: Draft) => d.id === id);
+               if (cloudDraft) applyDraft(cloudDraft);
            }
+         } catch (e) {
+           console.error("Failed to load draft", e);
          }
-       } catch (e) {
-         console.error("Failed to load draft", e);
-       }
+       };
+       load();
     }
-  }, [id]);
+  }, [id, isAuthenticated, user?.id]);
 
+  const applyDraft = (draft: Draft) => {
+     setGrid(draft.grid);
+     setTitle(draft.title);
+     setHistory([draft.grid]);
+     setHistoryIndex(0);
+     const loadedIsFree = draft.isFreeMode ?? (draft.width === 100);
+     setIsFreeMode(loadedIsFree);
+     setBounds({
+       minX: draft.minX ?? 0,
+       minY: draft.minY ?? 0,
+       maxX: draft.minX !== undefined ? (draft.minX + draft.width) : draft.width,
+       maxY: draft.minY !== undefined ? (draft.minY + draft.height) : draft.height,
+     });
+     if (draft.offsetX !== undefined && draft.offsetY !== undefined) {
+       setOffset({ x: draft.offsetX, y: draft.offsetY });
+       if (draft.zoom) setScale(draft.zoom);
+     }
+  };
+
+  // --- Auto Save Interval (LOCAL ONLY) ---
   useEffect(() => {
     const timer = setInterval(() => {
-        if (!isBeadMode) handleSave(true);
+        if (!isBeadMode) performSave('local');
     }, 10000); 
     return () => clearInterval(timer);
   }, [isBeadMode]);
@@ -236,6 +258,7 @@ const MobileEditor: React.FC = () => {
   };
 
   useEffect(() => {
+    // ... [Ruler logic remains identical] ...
     const canvas = rulerCanvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
@@ -327,11 +350,12 @@ const MobileEditor: React.FC = () => {
     return () => window.removeEventListener('resize', updateRulers);
   }, [scale, offset, bounds]);
 
-  const handleSave = (silent = false) => {
-    setSaveStatus('saving');
+  const prepareDraftObject = () => {
     const currentData = autoSaveRef.current;
     let currentId = draftIdRef.current || Date.now().toString();
     draftIdRef.current = currentId;
+    
+    // Create Thumbnail
     const width = currentData.bounds.maxX - currentData.bounds.minX;
     const height = currentData.bounds.maxY - currentData.bounds.minY;
     const canvas = document.createElement('canvas');
@@ -353,7 +377,8 @@ const MobileEditor: React.FC = () => {
         }
       });
     }
-    const draft: Draft = {
+
+    return {
       id: currentId,
       title: currentData.title,
       grid: currentData.grid,
@@ -367,36 +392,56 @@ const MobileEditor: React.FC = () => {
       lastModified: Date.now(),
       thumbnail: canvas.toDataURL('image/png', 0.5)
     };
-    try {
-      const drafts = JSON.parse(localStorage.getItem('pixelbead_drafts') || '[]');
-      const existingIndex = drafts.findIndex((d: Draft) => d.id === draft.id);
-      if (existingIndex >= 0) drafts[existingIndex] = draft;
-      else drafts.unshift(draft);
-      localStorage.setItem('pixelbead_drafts', JSON.stringify(drafts));
-      setSaveStatus('saved');
-      setTimeout(() => setSaveStatus('idle'), 2000);
-    } catch (e) {
-      setSaveStatus('idle');
-    }
   };
 
-  const handleExportClick = () => { handleSave(true); setShowExportModal(true); };
+  const performSave = async (mode: 'local' | 'cloud', feedback = false) => {
+      const draft = prepareDraftObject();
+      if (mode === 'local') {
+          StorageHelper.saveLocalCache(draft);
+          if (feedback) {
+              setSaveStatus('saved');
+              setTimeout(() => setSaveStatus('idle'), 1000);
+          }
+      } else {
+          // Cloud save also updates local cache implicitly via saveDraft logic
+          if (feedback) setSaveStatus('saving');
+          await StorageHelper.saveDraft(draft, isAuthenticated && user ? user.id : undefined);
+          if (feedback) {
+              setSaveStatus('saved');
+              setTimeout(() => setSaveStatus('idle'), 2000);
+          }
+      }
+  };
 
+  const handleManualSave = () => {
+      performSave('cloud', true);
+  };
+
+  const handleBack = async () => {
+      if (isAuthenticated) {
+          setIsSyncing(true);
+          await performSave('cloud', false);
+          setIsSyncing(false);
+          navigate('/create');
+      } else {
+          // Just local save (fast)
+          performSave('local', false);
+          navigate('/create');
+      }
+  };
+
+  const handleExportClick = () => { performSave('local', false); setShowExportModal(true); };
+
+  // ... [Other handlers: Mirror, Convert, History, Touch...] ...
   const handleMirror = () => {
     const width = bounds.maxX - bounds.minX;
     const newGrid: {[key: string]: string} = {};
-    
     Object.entries(grid).forEach(([key, colorId]) => {
         const [x, y] = key.split(',').map(Number);
-        // Horizontal flip: 
-        // 1. Get relative x from the left edge (bounds.minX)
-        // 2. Flip it within the width
-        // 3. Add back to bounds.minX
         if (isNaN(x) || isNaN(y)) return;
         const newX = bounds.minX + (width - 1) - (x - bounds.minX);
         newGrid[`${newX},${y}`] = colorId as string;
     });
-    
     setGrid(newGrid);
     commitHistory(newGrid);
   };
@@ -406,7 +451,7 @@ const MobileEditor: React.FC = () => {
       setIsConverting(true);
       setShowConvertConfirm(false);
 
-      setTimeout(() => {
+      setTimeout(async () => {
           const paletteCache = currentPalette.map(bead => {
               const rgb = hexToRgb(bead.hex);
               return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) };
@@ -418,16 +463,11 @@ const MobileEditor: React.FC = () => {
               if (originalBead) {
                   const rgb = hexToRgb(originalBead.hex);
                   const currentLab = rgbToLab(rgb.r, rgb.g, rgb.b);
-                  
                   let minDistance = Infinity;
                   let closestBead = paletteCache[0];
-                  
                   for (const p of paletteCache) {
                       const dist = deltaE(currentLab, p.lab);
-                      if (dist < minDistance) {
-                          minDistance = dist;
-                          closestBead = p;
-                      }
+                      if (dist < minDistance) { minDistance = dist; closestBead = p; }
                   }
                   newGrid[key] = closestBead.id;
               }
@@ -469,9 +509,8 @@ const MobileEditor: React.FC = () => {
           };
 
           try {
-              const drafts = JSON.parse(localStorage.getItem('pixelbead_drafts') || '[]');
-              drafts.unshift(newDraft);
-              localStorage.setItem('pixelbead_drafts', JSON.stringify(drafts));
+              // Saves copy. Should it sync? Maybe just local for now to be fast.
+              await StorageHelper.saveDraft(newDraft, isAuthenticated && user ? user.id : undefined);
               setShowConvertSuccess(true);
           } catch (e) {
               alert('保存副本失败，请检查存储空间');
@@ -487,12 +526,8 @@ const MobileEditor: React.FC = () => {
         const width = bounds.maxX - bounds.minX;
         const height = bounds.maxY - bounds.minY;
         
-        // 1. Prepare base grid (optionally denoised)
         let processedGrid = { ...grid };
         if (reduceNoise) {
-            // Updated to use the adjustable threshold
-            // protection 100 => threshold 0 (Keep all)
-            // protection 0 => threshold 100 (Keep only huge contrasts)
             const threshold = 100 - detailProtection;
             processedGrid = denoiseGrid(processedGrid, bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, allBeadsMap, threshold);
         }
@@ -520,18 +555,12 @@ const MobileEditor: React.FC = () => {
                     if (originalBead) {
                         const rgb = hexToRgb(originalBead.hex);
                         const currentLab = rgbToLab(rgb.r, rgb.g, rgb.b);
-                        
                         let minDistance = Infinity;
                         let closestBead = paletteCache[0];
-                        
                         for (const p of paletteCache) {
                             const dist = deltaE(currentLab, p.lab);
-                            if (dist < minDistance) {
-                                minDistance = dist;
-                                closestBead = p;
-                            }
+                            if (dist < minDistance) { minDistance = dist; closestBead = p; }
                         }
-                        
                         exportGrid[`${x},${y}`] = closestBead.id;
                     }
                 }
@@ -590,7 +619,6 @@ const MobileEditor: React.FC = () => {
          lastPinchRef.current = { distance: dist, center: { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 } };
          return;
      }
-     // In Bead Mode, standard touch is treated as move/pan
      if (tool === 'move' || isBeadMode) {
          isDragging.current = true;
          lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -644,7 +672,6 @@ const MobileEditor: React.FC = () => {
   const handleCellAction = (x: number, y: number) => {
     if (tool === 'move' || !selectedBead || isBeadMode) return;
     
-    // Auto-expand logic for Free Mode
     if (isFreeMode) {
         let newMinX = bounds.minX;
         let newMaxX = bounds.maxX;
@@ -655,24 +682,20 @@ const MobileEditor: React.FC = () => {
         let addedTop = 0;
         const EXPAND_CHUNK = 10;
 
-        // Expand Left (Negative X)
         if (x < bounds.minX + 2) { 
             newMinX = bounds.minX - EXPAND_CHUNK; 
             addedLeft = EXPAND_CHUNK; 
             changed = true; 
         }
-        // Expand Right (Positive X)
         if (x >= bounds.maxX - 2) { 
             newMaxX = bounds.maxX + EXPAND_CHUNK; 
             changed = true; 
         }
-        // Expand Top (Negative Y)
         if (y < bounds.minY + 2) { 
             newMinY = bounds.minY - EXPAND_CHUNK; 
             addedTop = EXPAND_CHUNK; 
             changed = true; 
         }
-        // Expand Bottom (Positive Y)
         if (y >= bounds.maxY - 2) { 
             newMaxY = bounds.maxY + EXPAND_CHUNK; 
             changed = true; 
@@ -680,7 +703,6 @@ const MobileEditor: React.FC = () => {
 
         if (changed) {
             setBounds({ minX: newMinX, maxX: newMaxX, minY: newMinY, maxY: newMaxY });
-            // Seamless expansion: Adjust offset to counteract the bounds change
             if (addedLeft > 0 || addedTop > 0) {
                 setOffset(prev => ({ 
                     x: prev.x - (addedLeft * CELL_SIZE * scale), 
@@ -689,7 +711,6 @@ const MobileEditor: React.FC = () => {
             }
         }
     } else {
-        // Fixed Mode: Boundary Check
         if (x < bounds.minX || y < bounds.minY || x >= bounds.maxX || y >= bounds.maxY) return;
     }
 
@@ -744,11 +765,21 @@ const MobileEditor: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden select-none">
+    <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden select-none relative">
+       
+       {/* Blocking Sync Modal */}
+       {isSyncing && (
+           <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+               <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin mb-4"></div>
+               <div className="font-bold text-lg">正在同步云端</div>
+               <div className="text-sm text-white/60 mt-1">请勿关闭页面...</div>
+           </div>
+       )}
+
        {/* Top Bar - Normal Mode */}
        {!isBeadMode && (
          <div className="h-14 bg-white shadow-sm flex items-center justify-between px-4 z-20 shrink-0">
-             <button onClick={() => navigate('/create')} className="p-2 -ml-2 text-slate-600"><span className="material-symbols-outlined">arrow_back</span></button>
+             <button onClick={handleBack} className="p-2 -ml-2 text-slate-600"><span className="material-symbols-outlined">arrow_back</span></button>
              <div className="flex gap-2">
                   <button onClick={() => setShowGrid(!showGrid)} className={`p-2 transition-colors ${showGrid ? 'text-primary' : 'text-slate-600'}`}><span className="material-symbols-outlined text-[20px]">grid_4x4</span></button>
                   <button onClick={() => setShowNumbers(!showNumbers)} className={`p-2 transition-colors ${showNumbers ? 'text-primary' : 'text-slate-600'}`}><span className="material-symbols-outlined text-[20px]">123</span></button>
@@ -756,7 +787,7 @@ const MobileEditor: React.FC = () => {
                   <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className="p-2 text-slate-600 disabled:opacity-30"><span className="material-symbols-outlined">redo</span></button>
                   <button onClick={handleMirror} className="p-2 text-slate-600 hover:text-primary hover:bg-slate-50 rounded-full" title="水平镜像"><span className="material-symbols-outlined text-[20px]">flip</span></button>
                   <button onClick={() => setShowConvertConfirm(true)} className="p-2 text-slate-600 hover:text-purple-600 hover:bg-purple-50 rounded-full" title="转换色彩"><span className="material-symbols-outlined text-[20px]">auto_fix_high</span></button>
-                  <button onClick={() => handleSave(false)} className={`p-2 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
+                  <button onClick={handleManualSave} className={`p-2 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
                   <button onClick={() => { setIsBeadMode(true); setTimerSeconds(0); }} className="p-2 text-primary hover:bg-blue-50 rounded-full" title="拼豆模式"><span className="material-symbols-outlined text-[20px]">spa</span></button>
                   <button onClick={handleExportClick} className="p-2 text-slate-600"><span className="material-symbols-outlined">ios_share</span></button>
              </div>
@@ -825,7 +856,7 @@ const MobileEditor: React.FC = () => {
 
        <PaletteModal isOpen={isPaletteOpen} onClose={() => setIsPaletteOpen(false)} onSelect={(c) => { setSelectedBead(c); addToRecent(c); setTool('pen'); setIsPaletteOpen(false); }} />
        
-       {/* Color Conversion Confirmation Modal */}
+       {/* Modals ... (Keep existing modals) */}
        {showConvertConfirm && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6">
