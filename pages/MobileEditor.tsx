@@ -8,7 +8,19 @@ import PaletteModal from '../components/PaletteModal';
 import { useAuth } from '../context/AuthContext';
 import { StorageHelper } from '../utils/storageHelper';
 
-type Tool = 'pen' | 'eraser' | 'fill' | 'picker' | 'move';
+type Tool = 'pen' | 'eraser' | 'fill' | 'picker' | 'move' | 'magic_wand' | 'select';
+
+// Selection State Interface
+interface SelectionState {
+    isActive: boolean;
+    startX: number;
+    startY: number;
+    endX: number;
+    endY: number;
+    floatingPixels: { [key: string]: string }; // relative x,y -> colorId
+    offsetX: number; // visual offset X
+    offsetY: number; // visual offset Y
+}
 
 // Memoized Grid View using Canvas for high performance rendering
 const GridView = React.memo(({ 
@@ -16,15 +28,72 @@ const GridView = React.memo(({
   bounds, 
   allBeadsMap, 
   showNumbers, 
-  cellSize 
+  cellSize,
+  selection
 }: { 
   grid: {[key: string]: string}, 
   bounds: any, 
   allBeadsMap: Record<string, BeadColor>, 
   showNumbers: boolean,
-  cellSize: number
+  cellSize: number,
+  selection?: SelectionState
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const animationRef = useRef<number>(0);
+  const dashOffsetRef = useRef<number>(0);
+
+  // Helper to draw the static grid content
+  const drawGridContent = (ctx: CanvasRenderingContext2D) => {
+      // 1. Draw Static Grid
+      Object.entries(grid).forEach(([key, colorId]) => {
+          const [x, y] = key.split(',').map(Number);
+          // Skip rendering if out of current bounds
+          if (x < bounds.minX || x >= bounds.maxX || y < bounds.minY || y >= bounds.maxY) return;
+          
+          const color = allBeadsMap[colorId];
+          if (!color) return;
+
+          const posX = (x - bounds.minX) * cellSize;
+          const posY = (y - bounds.minY) * cellSize;
+
+          // Draw pixel
+          ctx.fillStyle = color.hex;
+          ctx.fillRect(posX, posY, cellSize, cellSize);
+
+          // Draw number code if enabled
+          if (showNumbers) {
+              ctx.fillStyle = getTextColor(color.hex);
+              ctx.fillText(color.code, posX + cellSize/2, posY + cellSize/2);
+          }
+      });
+
+      // 2. Draw Floating Selection Pixels (The content being moved)
+      if (selection && selection.isActive) {
+          const minSX = Math.min(selection.startX, selection.endX);
+          const minSY = Math.min(selection.startY, selection.endY);
+
+          Object.entries(selection.floatingPixels).forEach(([relKey, colorId]) => {
+              const [rx, ry] = relKey.split(',').map(Number);
+              const worldX = minSX + rx + selection.offsetX;
+              const worldY = minSY + ry + selection.offsetY;
+
+              if (worldX < bounds.minX || worldX >= bounds.maxX || worldY < bounds.minY || worldY >= bounds.maxY) return;
+
+              const color = allBeadsMap[colorId];
+              if (!color) return;
+
+              const posX = (worldX - bounds.minX) * cellSize;
+              const posY = (worldY - bounds.minY) * cellSize;
+
+              ctx.fillStyle = color.hex;
+              ctx.fillRect(posX, posY, cellSize, cellSize);
+              if (showNumbers) {
+                  ctx.fillStyle = getTextColor(color.hex);
+                  ctx.fillText(color.code, posX + cellSize/2, posY + cellSize/2);
+              }
+          });
+      }
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -32,43 +101,76 @@ const GridView = React.memo(({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Clear canvas
-    const width = (bounds.maxX - bounds.minX) * cellSize;
-    const height = (bounds.maxY - bounds.minY) * cellSize;
-    ctx.clearRect(0, 0, width, height);
-
-    // Set font for numbers once
+    // Set font for numbers
     if (showNumbers) {
         ctx.font = 'bold 8px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
     }
 
-    Object.entries(grid).forEach(([key, colorId]) => {
-        const [x, y] = key.split(',').map(Number);
-        
-        // Skip rendering if out of current bounds
-        if (x < bounds.minX || x >= bounds.maxX || y < bounds.minY || y >= bounds.maxY) return;
-        
-        const color = allBeadsMap[colorId];
-        if (!color) return;
+    const renderLoop = () => {
+        // Clear canvas
+        const width = (bounds.maxX - bounds.minX) * cellSize;
+        const height = (bounds.maxY - bounds.minY) * cellSize;
+        ctx.clearRect(0, 0, width, height);
 
-        const posX = (x - bounds.minX) * cellSize;
-        const posY = (y - bounds.minY) * cellSize;
+        // Draw the beads
+        drawGridContent(ctx);
 
-        // Draw pixel
-        ctx.fillStyle = color.hex;
-        ctx.fillRect(posX, posY, cellSize, cellSize);
+        // 3. Draw Animated Selection Border
+        if (selection && selection.isActive) {
+            const minSX = Math.min(selection.startX, selection.endX);
+            const minSY = Math.min(selection.startY, selection.endY);
+            const w = Math.abs(selection.endX - selection.startX) + 1;
+            const h = Math.abs(selection.endY - selection.startY) + 1;
 
-        // Draw number code if enabled
-        if (showNumbers) {
-            ctx.fillStyle = getTextColor(color.hex);
-            // Center text in cell
-            ctx.fillText(color.code, posX + cellSize/2, posY + cellSize/2);
+            const borderX = (minSX + selection.offsetX - bounds.minX) * cellSize;
+            const borderY = (minSY + selection.offsetY - bounds.minY) * cellSize;
+            const borderW = w * cellSize;
+            const borderH = h * cellSize;
+
+            // Semi-transparent blue overlay
+            ctx.fillStyle = 'rgba(33, 150, 243, 0.2)';
+            ctx.fillRect(borderX, borderY, borderW, borderH);
+
+            ctx.save();
+            // Black dashed line
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.lineDashOffset = -dashOffsetRef.current;
+            ctx.strokeRect(borderX, borderY, borderW, borderH);
+
+            // White dashed line (offset) for high contrast on any color
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineDashOffset = -dashOffsetRef.current + 4; 
+            ctx.strokeRect(borderX, borderY, borderW, borderH);
+            ctx.restore();
+
+            // Increment offset for animation
+            dashOffsetRef.current = (dashOffsetRef.current + 0.5) % 8;
+            
+            // Continue loop
+            animationRef.current = requestAnimationFrame(renderLoop);
         }
-    });
+    };
 
-  }, [grid, bounds, allBeadsMap, showNumbers, cellSize]);
+    // Start rendering
+    if (selection && selection.isActive) {
+        renderLoop();
+    } else {
+        // Static render if no selection active (save battery)
+        const width = (bounds.maxX - bounds.minX) * cellSize;
+        const height = (bounds.maxY - bounds.minY) * cellSize;
+        ctx.clearRect(0, 0, width, height);
+        drawGridContent(ctx);
+    }
+
+    return () => {
+        if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    };
+
+  }, [grid, bounds, allBeadsMap, showNumbers, cellSize, selection]);
 
   return (
     <canvas 
@@ -139,6 +241,16 @@ const MobileEditor: React.FC = () => {
   const [showExportModal, setShowExportModal] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
   
+  // Selection Tool State
+  const [selection, setSelection] = useState<SelectionState>({
+      isActive: false, startX: 0, startY: 0, endX: 0, endY: 0, floatingPixels: {}, offsetX: 0, offsetY: 0
+  });
+  const isSelecting = useRef(false);
+  const isDraggingSelection = useRef(false);
+
+  // Magic Wand State
+  const [magicWandTarget, setMagicWandTarget] = useState<{id: string, count: number} | null>(null);
+
   // Export Settings
   const [reduceNoise, setReduceNoise] = useState(false);
   const [detailProtection, setDetailProtection] = useState(30); 
@@ -186,20 +298,17 @@ const MobileEditor: React.FC = () => {
     autoSaveRef.current = { grid, title, bounds, isFreeMode, offset, scale };
   }, [grid, title, bounds, isFreeMode, offset, scale]);
 
-  // Initial Load: Priority is local state (if passed) > Local Storage (Fast) > Cloud
+  // Initial Load... (Same as before)
   useEffect(() => {
     if (!state?.grid && id && id !== 'new' && id !== 'imported') {
        const load = async () => {
          try {
-           // First try local storage explicitly to be fast and safe
-           const localDrafts = await StorageHelper.loadDrafts(); // No User ID = Local
+           const localDrafts = await StorageHelper.loadDrafts(); 
            const localDraft = localDrafts.find((d: Draft) => d.id === id);
            
            if (localDraft) {
-               // If local exists, use it immediately
                applyDraft(localDraft);
            } else if (isAuthenticated && user) {
-               // Only fetch cloud if not found locally
                const cloudDrafts = await StorageHelper.loadDrafts(user.id);
                const cloudDraft = cloudDrafts.find((d: Draft) => d.id === id);
                if (cloudDraft) applyDraft(cloudDraft);
@@ -258,7 +367,7 @@ const MobileEditor: React.FC = () => {
   };
 
   useEffect(() => {
-    // ... [Ruler logic remains identical] ...
+    // ... [Ruler logic identical] ...
     const canvas = rulerCanvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
@@ -351,6 +460,7 @@ const MobileEditor: React.FC = () => {
   }, [scale, offset, bounds]);
 
   const prepareDraftObject = () => {
+    // ... [Same draft object prep logic, ensure we merge floating selection if active before save]
     const currentData = autoSaveRef.current;
     let currentId = draftIdRef.current || Date.now().toString();
     draftIdRef.current = currentId;
@@ -395,51 +505,53 @@ const MobileEditor: React.FC = () => {
   };
 
   const performSave = async (mode: 'local' | 'cloud', feedback = false) => {
-      const draft = prepareDraftObject();
-      if (mode === 'local') {
-          StorageHelper.saveLocalCache(draft);
-          if (feedback) {
-              setSaveStatus('saved');
-              setTimeout(() => setSaveStatus('idle'), 1000);
-          }
-      } else {
-          // Cloud save also updates local cache implicitly via saveDraft logic
-          if (feedback) setSaveStatus('saving');
-          await StorageHelper.saveDraft(draft, isAuthenticated && user ? user.id : undefined);
-          if (feedback) {
-              setSaveStatus('saved');
-              setTimeout(() => setSaveStatus('idle'), 2000);
-          }
+      // Force commit if selecting
+      if (selection.isActive) {
+          await commitSelection();
       }
+      // Wait a tick for state update
+      setTimeout(async () => {
+          const draft = prepareDraftObject();
+          if (mode === 'local') {
+              StorageHelper.saveLocalCache(draft);
+              if (feedback) {
+                  setSaveStatus('saved');
+                  setTimeout(() => setSaveStatus('idle'), 1000);
+              }
+          } else {
+              if (feedback) setSaveStatus('saving');
+              await StorageHelper.saveDraft(draft, isAuthenticated && user ? user.id : undefined);
+              if (feedback) {
+                  setSaveStatus('saved');
+                  setTimeout(() => setSaveStatus('idle'), 2000);
+              }
+          }
+      }, 0);
   };
 
-  const handleManualSave = () => {
-      performSave('cloud', true);
-  };
+  const handleManualSave = () => { performSave('cloud', true); };
 
   const handleBack = async () => {
+      if (selection.isActive) await commitSelection();
       if (isAuthenticated) {
           setIsSyncing(true);
           await performSave('cloud', false);
           setIsSyncing(false);
           navigate('/create');
       } else {
-          // Just local save (fast)
           performSave('local', false);
           navigate('/create');
       }
   };
 
-  const handleExportClick = () => { performSave('local', false); setShowExportModal(true); };
+  const handleExportClick = () => { 
+      if (selection.isActive) commitSelection();
+      performSave('local', false); 
+      setShowExportModal(true); 
+  };
 
-  // --- Developer Export Function ---
   const handleDevExport = () => {
-      const exportData = {
-          width: bounds.maxX - bounds.minX,
-          height: bounds.maxY - bounds.minY,
-          grid: grid // Saves the raw grid map {"x,y": "ID"}
-      };
-      
+      const exportData = { width: bounds.maxX - bounds.minX, height: bounds.maxY - bounds.minY, grid: grid };
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData));
       const downloadAnchorNode = document.createElement('a');
       downloadAnchorNode.setAttribute("href", dataStr);
@@ -449,7 +561,7 @@ const MobileEditor: React.FC = () => {
       downloadAnchorNode.remove();
   };
 
-  // ... [Other handlers: Mirror, Convert, History, Touch...] ...
+  // ... [Mirror, Convert, Export Logic same as before] ...
   const handleMirror = () => {
     const width = bounds.maxX - bounds.minX;
     const newGrid: {[key: string]: string} = {};
@@ -463,17 +575,15 @@ const MobileEditor: React.FC = () => {
     commitHistory(newGrid);
   };
 
-  const performConversion = () => {
+  const performConversion = () => { /* ... same ... */
       if (!currentPalette || currentPalette.length === 0) return;
       setIsConverting(true);
       setShowConvertConfirm(false);
-
       setTimeout(async () => {
           const paletteCache = currentPalette.map(bead => {
               const rgb = hexToRgb(bead.hex);
               return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) };
           });
-
           const newGrid: {[key: string]: string} = {};
           Object.entries(grid).forEach(([key, colorId]) => {
               const originalBead = allBeadsMap[colorId];
@@ -489,51 +599,27 @@ const MobileEditor: React.FC = () => {
                   newGrid[key] = closestBead.id;
               }
           });
-
-          // Generate Draft Copy
+          // ... thumbnail gen ...
           const width = bounds.maxX - bounds.minX;
           const height = bounds.maxY - bounds.minY;
           const canvas = document.createElement('canvas');
-          const thumbSize = 5;
-          canvas.width = Math.max(1, width * thumbSize);
-          canvas.height = Math.max(1, height * thumbSize);
+          canvas.width = Math.max(1, width * 5); canvas.height = Math.max(1, height * 5);
           const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            Object.entries(newGrid).forEach(([key, colorId]) => {
-              const [x, y] = key.split(',').map(Number);
-              const drawX = x - bounds.minX;
-              const drawY = y - bounds.minY;
-              const color = allBeadsMap[colorId];
-              if (color) {
-                ctx.fillStyle = color.hex;
-                ctx.fillRect(drawX * thumbSize, drawY * thumbSize, thumbSize, thumbSize);
-              }
-            });
-          }
+          if(ctx) { ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); Object.entries(newGrid).forEach(([k,c])=>{const[x,y]=k.split(',').map(Number);const co=allBeadsMap[c];if(co){ctx.fillStyle=co.hex;ctx.fillRect((x-bounds.minX)*5,(y-bounds.minY)*5,5,5)}}); }
 
           const newDraft: Draft = {
               id: Date.now().toString(),
               title: `${title} (转换版)`,
               grid: newGrid,
               width, height,
-              minX: bounds.minX,
-              minY: bounds.minY,
-              isFreeMode,
-              lastModified: Date.now(),
+              minX: bounds.minX, minY: bounds.minY,
+              isFreeMode, lastModified: Date.now(),
               thumbnail: canvas.toDataURL('image/png', 0.5)
           };
-
           try {
-              // Saves copy. Should it sync? Maybe just local for now to be fast.
               await StorageHelper.saveDraft(newDraft, isAuthenticated && user ? user.id : undefined);
               setShowConvertSuccess(true);
-          } catch (e) {
-              alert('保存副本失败，请检查存储空间');
-          } finally {
-              setIsConverting(false);
-          }
+          } catch (e) { alert('保存副本失败'); } finally { setIsConverting(false); }
       }, 100);
   };
 
@@ -542,38 +628,24 @@ const MobileEditor: React.FC = () => {
      setTimeout(() => {
         const width = bounds.maxX - bounds.minX;
         const height = bounds.maxY - bounds.minY;
-        
         let processedGrid = { ...grid };
         if (reduceNoise) {
             const threshold = 100 - detailProtection;
             processedGrid = denoiseGrid(processedGrid, bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, allBeadsMap, threshold);
         }
-
         let exportGrid: {[key: string]: string} = {};
-        
         if (shouldMapColors) {
-            if (!currentPalette || currentPalette.length === 0) {
-                alert("当前选择的套装为空，请先在灵感页设置套装。");
-                setIsConverting(false);
-                return;
-            }
-            const paletteCache = currentPalette.map(bead => {
-                const rgb = hexToRgb(bead.hex);
-                return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) };
-            });
-            
+            if (!currentPalette || currentPalette.length === 0) { alert("当前选择的套装为空"); setIsConverting(false); return; }
+            const paletteCache = currentPalette.map(bead => { const rgb = hexToRgb(bead.hex); return { id: bead.id, rgb, lab: rgbToLab(rgb.r, rgb.g, rgb.b) }; });
             Object.entries(processedGrid).forEach(([key, colorId]) => {
                 const [gx, gy] = key.split(',').map(Number);
-                const x = gx - bounds.minX;
-                const y = gy - bounds.minY;
-                
+                const x = gx - bounds.minX; const y = gy - bounds.minY;
                 if (x >= 0 && x < width && y >= 0 && y < height) {
                     const originalBead = allBeadsMap[colorId as string];
                     if (originalBead) {
                         const rgb = hexToRgb(originalBead.hex);
                         const currentLab = rgbToLab(rgb.r, rgb.g, rgb.b);
-                        let minDistance = Infinity;
-                        let closestBead = paletteCache[0];
+                        let minDistance = Infinity; let closestBead = paletteCache[0];
                         for (const p of paletteCache) {
                             const dist = deltaE(currentLab, p.lab);
                             if (dist < minDistance) { minDistance = dist; closestBead = p; }
@@ -628,6 +700,52 @@ const MobileEditor: React.FC = () => {
     setScale(newScale);
   };
 
+  // --- Selection Logic ---
+  const commitSelection = async () => {
+      if (!selection.isActive) return;
+      const minSX = Math.min(selection.startX, selection.endX);
+      const minSY = Math.min(selection.startY, selection.endY);
+      
+      const newGrid = { ...grid };
+      
+      // Stamp floating pixels to new location
+      Object.entries(selection.floatingPixels).forEach(([relKey, colorId]) => {
+          const [rx, ry] = relKey.split(',').map(Number);
+          const finalX = minSX + rx + selection.offsetX;
+          const finalY = minSY + ry + selection.offsetY;
+          newGrid[`${finalX},${finalY}`] = colorId;
+      });
+
+      setGrid(newGrid);
+      commitHistory(newGrid);
+      setSelection({ isActive: false, startX: 0, startY: 0, endX: 0, endY: 0, floatingPixels: {}, offsetX: 0, offsetY: 0 });
+  };
+
+  const handleMagicWandAction = (action: 'delete' | 'replace') => {
+      if (!magicWandTarget) return;
+      
+      const newGrid = { ...grid };
+      let changed = false;
+
+      Object.entries(newGrid).forEach(([key, colorId]) => {
+          if (colorId === magicWandTarget.id) {
+              if (action === 'delete') {
+                  delete newGrid[key];
+                  changed = true;
+              } else if (action === 'replace' && selectedBead) {
+                  newGrid[key] = selectedBead.id;
+                  changed = true;
+              }
+          }
+      });
+
+      if (changed) {
+          setGrid(newGrid);
+          commitHistory(newGrid);
+      }
+      setMagicWandTarget(null);
+  };
+
   const handleTouchStart = (e: React.TouchEvent) => {
      if (e.touches.length === 2) {
          isPinching.current = true; isDrawing.current = false;
@@ -636,19 +754,71 @@ const MobileEditor: React.FC = () => {
          lastPinchRef.current = { distance: dist, center: { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 } };
          return;
      }
-     if (tool === 'move' || isBeadMode) {
-         isDragging.current = true;
-         lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-         return;
-     }
-     if (e.touches.length === 1 && !isPinching.current) {
-        const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
-        handleCellAction(x, y);
+     if (e.touches.length === 1) {
+         const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
+
+         if (tool === 'move' || isBeadMode) {
+             isDragging.current = true;
+             lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+             return;
+         }
+
+         if (tool === 'select') {
+             if (selection.isActive) {
+                 const minSX = Math.min(selection.startX, selection.endX);
+                 const maxSX = Math.max(selection.startX, selection.endX);
+                 const minSY = Math.min(selection.startY, selection.endY);
+                 const maxSY = Math.max(selection.startY, selection.endY);
+                 
+                 // If click inside selection, start dragging selection
+                 const localX = x - selection.offsetX;
+                 const localY = y - selection.offsetY;
+                 
+                 if (localX >= minSX && localX <= maxSX && localY >= minSY && localY <= maxSY) {
+                     isDraggingSelection.current = true;
+                     lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                     return;
+                 } else {
+                     // Click outside: commit and start new selection
+                     commitSelection().then(() => {
+                         isSelecting.current = true;
+                         setSelection(prev => ({ ...prev, isActive: true, startX: x, startY: y, endX: x, endY: y, floatingPixels: {}, offsetX: 0, offsetY: 0 }));
+                     });
+                     return;
+                 }
+             } else {
+                 isSelecting.current = true;
+                 setSelection({ isActive: true, startX: x, startY: y, endX: x, endY: y, floatingPixels: {}, offsetX: 0, offsetY: 0 });
+                 return;
+             }
+         }
+
+         // Commit selection if clicking with another tool (handled by useEffect or click outside)
+         if (selection.isActive) {
+             commitSelection();
+             return; 
+         }
+
+         if (tool === 'magic_wand') {
+             const colorId = grid[`${x},${y}`];
+             if (colorId) {
+                 let count = 0;
+                 Object.values(grid).forEach(v => { if(v === colorId) count++; });
+                 setMagicWandTarget({ id: colorId, count });
+             }
+             return;
+         }
+
+         if (!isPinching.current) {
+            handleCellAction(x, y);
+         }
      }
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
       if (e.cancelable) e.preventDefault();
+      
+      // Pinch Zoom Logic (Unchanged)
       if (e.touches.length === 2 && lastPinchRef.current) {
           const t1 = e.touches[0]; const t2 = e.touches[1];
           const currentDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
@@ -668,6 +838,8 @@ const MobileEditor: React.FC = () => {
           lastPinchRef.current = { distance: currentDist, center: currentCenter };
           return;
       }
+
+      // Pan Canvas
       if ((tool === 'move' || isBeadMode) && isDragging.current && e.touches.length === 1) {
           const dx = e.touches[0].clientX - lastTouchPos.current.x;
           const dy = e.touches[0].clientY - lastTouchPos.current.y;
@@ -675,7 +847,35 @@ const MobileEditor: React.FC = () => {
           lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
           return;
       }
-      if (tool !== 'move' && !isDragging.current && !isPinching.current && e.touches.length === 1 && !isBeadMode) {
+
+      // Selection Dragging
+      if (tool === 'select' && e.touches.length === 1) {
+          const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
+          
+          if (isSelecting.current) {
+              setSelection(prev => ({ ...prev, endX: x, endY: y }));
+          } else if (isDraggingSelection.current) {
+              // Convert pixel delta to grid delta approximation for smoother visual, 
+              // but here strictly snap to grid for simplicity logic
+              // Actually for floating selection we want 1:1 movement relative to grid
+              const dxPixels = e.touches[0].clientX - lastTouchPos.current.x;
+              const dyPixels = e.touches[0].clientY - lastTouchPos.current.y;
+              // We need to accumulate this or just use grid diff
+              // Simple Grid Snap:
+              const lastGrid = getGridCoord(lastTouchPos.current.x, lastTouchPos.current.y);
+              const dx = x - lastGrid.x;
+              const dy = y - lastGrid.y;
+              
+              if (dx !== 0 || dy !== 0) {
+                  setSelection(prev => ({ ...prev, offsetX: prev.offsetX + dx, offsetY: prev.offsetY + dy }));
+                  lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; 
+              }
+          }
+          return;
+      }
+
+      // Drawing
+      if (tool !== 'move' && tool !== 'select' && tool !== 'magic_wand' && !isDragging.current && !isPinching.current && e.touches.length === 1 && !isBeadMode) {
           const {x, y} = getGridCoord(e.touches[0].clientX, e.touches[0].clientY);
           if (isDrawing.current && (tool === 'pen' || tool === 'eraser')) handleCellAction(x, y);
       }
@@ -683,49 +883,62 @@ const MobileEditor: React.FC = () => {
   
   const handleTouchEnd = () => {
       isDragging.current = false; isPinching.current = false; lastPinchRef.current = null;
+      
+      if (isSelecting.current) {
+          isSelecting.current = false;
+          // Capture pixels inside selection
+          const minSX = Math.min(selection.startX, selection.endX);
+          const maxSX = Math.max(selection.startX, selection.endX);
+          const minSY = Math.min(selection.startY, selection.endY);
+          const maxSY = Math.max(selection.startY, selection.endY);
+
+          const floating: {[key: string]: string} = {};
+          const newGrid = { ...grid };
+          let hasPixels = false;
+
+          for (let y = minSY; y <= maxSY; y++) {
+              for (let x = minSX; x <= maxSX; x++) {
+                  const key = `${x},${y}`;
+                  if (newGrid[key]) {
+                      floating[`${x - minSX},${y - minSY}`] = newGrid[key];
+                      delete newGrid[key];
+                      hasPixels = true;
+                  }
+              }
+          }
+
+          if (hasPixels) {
+              setGrid(newGrid);
+              setSelection(prev => ({ ...prev, floatingPixels: floating }));
+          } else {
+              // Empty selection, cancel
+              setSelection({ isActive: false, startX: 0, startY: 0, endX: 0, endY: 0, floatingPixels: {}, offsetX: 0, offsetY: 0 });
+          }
+      }
+
+      isDraggingSelection.current = false;
+
       if (isDrawing.current && !isBeadMode) commitHistory(grid);
   };
 
   const handleCellAction = (x: number, y: number) => {
-    if (tool === 'move' || !selectedBead || isBeadMode) return;
+    if (tool === 'move' || tool === 'select' || tool === 'magic_wand' || !selectedBead || isBeadMode) return;
     
+    // ... [Free mode expansion logic same as before] ...
     if (isFreeMode) {
         let newMinX = bounds.minX;
         let newMaxX = bounds.maxX;
         let newMinY = bounds.minY;
         let newMaxY = bounds.maxY;
         let changed = false;
-        let addedLeft = 0;
-        let addedTop = 0;
-        const EXPAND_CHUNK = 10;
-
-        if (x < bounds.minX + 2) { 
-            newMinX = bounds.minX - EXPAND_CHUNK; 
-            addedLeft = EXPAND_CHUNK; 
-            changed = true; 
-        }
-        if (x >= bounds.maxX - 2) { 
-            newMaxX = bounds.maxX + EXPAND_CHUNK; 
-            changed = true; 
-        }
-        if (y < bounds.minY + 2) { 
-            newMinY = bounds.minY - EXPAND_CHUNK; 
-            addedTop = EXPAND_CHUNK; 
-            changed = true; 
-        }
-        if (y >= bounds.maxY - 2) { 
-            newMaxY = bounds.maxY + EXPAND_CHUNK; 
-            changed = true; 
-        }
-
+        let addedLeft = 0; let addedTop = 0; const EXPAND_CHUNK = 10;
+        if (x < bounds.minX + 2) { newMinX = bounds.minX - EXPAND_CHUNK; addedLeft = EXPAND_CHUNK; changed = true; }
+        if (x >= bounds.maxX - 2) { newMaxX = bounds.maxX + EXPAND_CHUNK; changed = true; }
+        if (y < bounds.minY + 2) { newMinY = bounds.minY - EXPAND_CHUNK; addedTop = EXPAND_CHUNK; changed = true; }
+        if (y >= bounds.maxY - 2) { newMaxY = bounds.maxY + EXPAND_CHUNK; changed = true; }
         if (changed) {
             setBounds({ minX: newMinX, maxX: newMaxX, minY: newMinY, maxY: newMaxY });
-            if (addedLeft > 0 || addedTop > 0) {
-                setOffset(prev => ({ 
-                    x: prev.x - (addedLeft * CELL_SIZE * scale), 
-                    y: prev.y - (addedTop * CELL_SIZE * scale) 
-                }));
-            }
+            if (addedLeft > 0 || addedTop > 0) { setOffset(prev => ({ x: prev.x - (addedLeft * CELL_SIZE * scale), y: prev.y - (addedTop * CELL_SIZE * scale) })); }
         }
     } else {
         if (x < bounds.minX || y < bounds.minY || x >= bounds.maxX || y >= bounds.maxY) return;
@@ -743,36 +956,26 @@ const MobileEditor: React.FC = () => {
     } else if (tool === 'fill') {
       const targetColor = grid[key];
       if (targetColor === selectedBead.id) return;
-      
       const queue: [number, number][] = [[x, y]];
       const visited: Set<string> = new Set<string>([key]);
       let safetyCount = 0;
-      
       while (queue.length > 0 && safetyCount < 1000) {
         const next: [number, number] | undefined = queue.shift();
         if (!next) break;
         const [cx, cy] = next;
         const cKey: string = `${cx},${cy}`;
-        if (selectedBead) {
-          newGrid[cKey] = selectedBead.id;
-        }
+        if (selectedBead) newGrid[cKey] = selectedBead.id;
         safetyCount++;
-        
         const neighbors: [number, number][] = [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]];
         neighbors.forEach(([nx, ny]) => {
            const nKey: string = `${nx},${ny}`;
            if (!isFreeMode && (nx < bounds.minX || ny < bounds.minY || nx >= bounds.maxX || ny >= bounds.maxY)) return;
-           
            if (!visited.has(nKey)) {
              const neighborColor: string | undefined = grid[nKey];
              if (targetColor === undefined) {
-               if (neighborColor === undefined) {
-                 visited.add(nKey);
-                 queue.push([nx, ny]);
-               }
+               if (neighborColor === undefined) { visited.add(nKey); queue.push([nx, ny]); }
              } else if (neighborColor === targetColor) {
-               visited.add(nKey);
-               queue.push([nx, ny]);
+               visited.add(nKey); queue.push([nx, ny]);
              }
            }
         });
@@ -781,9 +984,15 @@ const MobileEditor: React.FC = () => {
     }
   };
 
+  // Helper to commit selection when switching tools
+  const setToolAndCommit = async (newTool: Tool) => {
+      if (selection.isActive) await commitSelection();
+      setTool(newTool);
+  };
+
   return (
     <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden select-none relative">
-       {/* Blocking Sync Modal and Top Bars (omitted for brevity, assume existing) ... */}
+       {/* Sync Blocking... */}
        {isSyncing && (
            <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center text-white">
                <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin mb-4"></div>
@@ -801,6 +1010,11 @@ const MobileEditor: React.FC = () => {
                   <button onClick={() => setShowNumbers(!showNumbers)} className={`p-2 transition-colors ${showNumbers ? 'text-primary' : 'text-slate-600'}`}><span className="material-symbols-outlined text-[20px]">123</span></button>
                   <button onClick={handleUndo} disabled={historyIndex === 0} className="p-2 text-slate-600 disabled:opacity-30"><span className="material-symbols-outlined">undo</span></button>
                   <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className="p-2 text-slate-600 disabled:opacity-30"><span className="material-symbols-outlined">redo</span></button>
+                  
+                  {/* Select Tool & Magic Wand added to top bar as actions or quick toggles */}
+                  <button onClick={() => setToolAndCommit('select')} className={`p-2 rounded-full transition-colors ${tool === 'select' ? 'text-white bg-primary' : 'text-slate-600 hover:text-primary'}`} title="框选移动"><span className="material-symbols-outlined text-[20px]">select_all</span></button>
+                  <button onClick={() => setToolAndCommit('magic_wand')} className={`p-2 rounded-full transition-colors ${tool === 'magic_wand' ? 'text-white bg-primary' : 'text-slate-600 hover:text-primary'}`} title="魔棒工具"><span className="material-symbols-outlined text-[20px]">auto_awesome</span></button>
+
                   <button onClick={handleMirror} className="p-2 text-slate-600 hover:text-primary hover:bg-slate-50 rounded-full" title="水平镜像"><span className="material-symbols-outlined text-[20px]">flip</span></button>
                   <button onClick={() => setShowConvertConfirm(true)} className="p-2 text-slate-600 hover:text-purple-600 hover:bg-purple-50 rounded-full" title="转换色彩"><span className="material-symbols-outlined text-[20px]">auto_fix_high</span></button>
                   <button onClick={handleManualSave} className={`p-2 transition-colors ${saveStatus === 'saved' ? 'text-green-500' : 'text-primary'}`}><span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span></button>
@@ -810,7 +1024,7 @@ const MobileEditor: React.FC = () => {
          </div>
        )}
 
-       {/* Top Bar - Bead Mode */}
+       {/* Bead Mode Top Bar ... */}
        {isBeadMode && (
          <div className="h-16 bg-white/90 backdrop-blur shadow-sm flex items-center justify-between px-6 z-20 shrink-0 border-b border-primary/20">
              <div className="flex items-center gap-3">
@@ -847,7 +1061,7 @@ const MobileEditor: React.FC = () => {
                 }}
               >
                   {showGrid && <div className="absolute inset-0 pointer-events-none z-20 opacity-25" style={{ backgroundImage: `linear-gradient(to right, #000000 1px, transparent 1px), linear-gradient(to bottom, #000000 1px, transparent 1px)`, backgroundSize: `${CELL_SIZE}px ${CELL_SIZE}px` }} />}
-                  <GridView grid={grid} bounds={bounds} allBeadsMap={allBeadsMap} showNumbers={showNumbers} cellSize={CELL_SIZE} />
+                  <GridView grid={grid} bounds={bounds} allBeadsMap={allBeadsMap} showNumbers={showNumbers} cellSize={CELL_SIZE} selection={selection} />
               </div>
           </div>
        </div>
@@ -861,17 +1075,61 @@ const MobileEditor: React.FC = () => {
                </div>
                <div className="w-[1px] h-8 bg-gray-200 mx-2"></div>
                <div className="flex flex-1 justify-between text-slate-500 max-w-xs">
-                   <button onClick={() => setTool('move')} className={`flex flex-col items-center transition-colors ${tool === 'move' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'move' ? 'filled' : ''}`}>pan_tool_alt</span></button>
-                   <button onClick={() => setTool('pen')} className={`flex flex-col items-center transition-colors ${tool === 'pen' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'pen' ? 'filled' : ''}`}>edit</span></button>
-                   <button onClick={() => setTool('eraser')} className={`flex flex-col items-center transition-colors ${tool === 'eraser' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'eraser' ? 'filled' : ''}`}>ink_eraser</span></button>
-                   <button onClick={() => setTool('fill')} className={`flex flex-col items-center transition-colors ${tool === 'fill' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'fill' ? 'filled' : ''}`}>format_color_fill</span></button>
-                   <button onClick={() => setTool('picker')} className={`flex flex-col items-center transition-colors ${tool === 'picker' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'picker' ? 'filled' : ''}`}>colorize</span></button>
+                   <button onClick={() => setToolAndCommit('move')} className={`flex flex-col items-center transition-colors ${tool === 'move' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'move' ? 'filled' : ''}`}>pan_tool_alt</span></button>
+                   <button onClick={() => setToolAndCommit('pen')} className={`flex flex-col items-center transition-colors ${tool === 'pen' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'pen' ? 'filled' : ''}`}>edit</span></button>
+                   <button onClick={() => setToolAndCommit('eraser')} className={`flex flex-col items-center transition-colors ${tool === 'eraser' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'eraser' ? 'filled' : ''}`}>ink_eraser</span></button>
+                   <button onClick={() => setToolAndCommit('fill')} className={`flex flex-col items-center transition-colors ${tool === 'fill' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'fill' ? 'filled' : ''}`}>format_color_fill</span></button>
+                   <button onClick={() => setToolAndCommit('picker')} className={`flex flex-col items-center transition-colors ${tool === 'picker' ? 'text-primary' : 'hover:text-gray-700'}`}><span className={`material-symbols-outlined text-2xl ${tool === 'picker' ? 'filled' : ''}`}>colorize</span></button>
                </div>
            </div>
        )}
 
        <PaletteModal isOpen={isPaletteOpen} onClose={() => setIsPaletteOpen(false)} onSelect={(c) => { setSelectedBead(c); addToRecent(c); setTool('pen'); setIsPaletteOpen(false); }} />
        
+       {/* Magic Wand Modal */}
+       {magicWandTarget && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
+            <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6">
+                <div className="flex flex-col items-center mb-4">
+                    <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mb-3">
+                        <span className="material-symbols-outlined text-2xl">auto_awesome</span>
+                    </div>
+                    <h3 className="font-bold text-lg text-gray-900 dark:text-white">批量操作</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-1">
+                        选中了 <span className="font-bold">{magicWandTarget.count}</span> 个 {allBeadsMap[magicWandTarget.id]?.code} 颜色的像素。
+                    </p>
+                </div>
+                <div className="space-y-3">
+                    <button 
+                        onClick={() => handleMagicWandAction('replace')} 
+                        disabled={!selectedBead || selectedBead.id === magicWandTarget.id}
+                        className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${
+                            (!selectedBead || selectedBead.id === magicWandTarget.id)
+                            ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed'
+                            : 'bg-primary text-white shadow-lg shadow-primary/30 active:scale-95'
+                        }`}
+                    >
+                        <span className="material-symbols-outlined text-sm">format_paint</span>
+                        {(!selectedBead || selectedBead.id === magicWandTarget.id) 
+                            ? '当前已是该颜色' 
+                            : `全部替换为 ${selectedBead?.code}`
+                        }
+                    </button>
+                    
+                    <button 
+                        onClick={() => handleMagicWandAction('delete')} 
+                        className="w-full py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-500 font-bold border border-red-100 dark:border-red-900/30 flex items-center justify-center gap-2 active:scale-95 transition-transform"
+                    >
+                        <span className="material-symbols-outlined text-sm">delete</span>
+                        全部删除
+                    </button>
+                    <button onClick={() => setMagicWandTarget(null)} className="w-full py-2 text-gray-400 text-sm font-bold hover:text-gray-600 dark:hover:text-gray-300">取消</button>
+                </div>
+            </div>
+         </div>
+       )}
+
+       {/* Existing Convert/Export Modals... */}
        {showConvertConfirm && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6">
