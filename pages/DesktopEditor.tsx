@@ -242,6 +242,18 @@ const DesktopEditor: React.FC = () => {
   const rulerCanvasRef = useRef<HTMLCanvasElement>(null);
   const mainContainerRef = useRef<HTMLDivElement>(null);
   const [history, setHistory] = useState<{[key: string]: string}[]>([{}]);
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (history.length > 1) {
+        e.preventDefault();
+        e.returnValue = ''; 
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [history]); 
   const [historyIndex, setHistoryIndex] = useState(0);
   const isDragging = useRef(false);
   const isDrawing = useRef(false);
@@ -293,7 +305,7 @@ const DesktopEditor: React.FC = () => {
   // Auto-Save: LOCAL ONLY
   useEffect(() => { 
       const timer = setInterval(() => { 
-          if (!isBeadMode) performSave('local'); 
+          if (!isBeadMode) performSave('local',true); 
       }, 10000); 
       return () => clearInterval(timer); 
   }, [isBeadMode]);
@@ -388,17 +400,15 @@ const DesktopEditor: React.FC = () => {
 
   const performSave = async (mode: 'local' | 'cloud', feedback = false) => {
       if (selection.isActive) await commitSelection();
-      setTimeout(async () => {
-          const draft = prepareDraftObject();
-          if (mode === 'local') {
-              StorageHelper.saveLocalCache(draft);
-              if (feedback) { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 1000); }
-          } else {
-              if (feedback) setSaveStatus('saving');
-              await StorageHelper.saveDraft(draft, isAuthenticated && user ? user.id : undefined);
-              if (feedback) { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000); }
-          }
-      }, 0);
+        const draft = prepareDraftObject();
+        if (mode === 'local') {
+            StorageHelper.saveLocalCache(draft);
+            if (feedback) { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 1000); }
+        } else {
+            if (feedback) setSaveStatus('saving');
+            await StorageHelper.saveDraft(draft, isAuthenticated && user ? user.id : undefined);
+            if (feedback) { setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000); }
+        }
   };
 
   const handleManualSave = () => { performSave('cloud', true); };
