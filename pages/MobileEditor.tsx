@@ -432,6 +432,23 @@ const MobileEditor: React.FC = () => {
 
   const handleExportClick = () => { performSave('local', false); setShowExportModal(true); };
 
+  // --- Developer Export Function ---
+  const handleDevExport = () => {
+      const exportData = {
+          width: bounds.maxX - bounds.minX,
+          height: bounds.maxY - bounds.minY,
+          grid: grid // Saves the raw grid map {"x,y": "ID"}
+      };
+      
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData));
+      const downloadAnchorNode = document.createElement('a');
+      downloadAnchorNode.setAttribute("href", dataStr);
+      downloadAnchorNode.setAttribute("download", `template_${Date.now()}.json`);
+      document.body.appendChild(downloadAnchorNode);
+      downloadAnchorNode.click();
+      downloadAnchorNode.remove();
+  };
+
   // ... [Other handlers: Mirror, Convert, History, Touch...] ...
   const handleMirror = () => {
     const width = bounds.maxX - bounds.minX;
@@ -766,8 +783,7 @@ const MobileEditor: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen w-full bg-slate-100 overflow-hidden select-none relative">
-       
-       {/* Blocking Sync Modal */}
+       {/* Blocking Sync Modal and Top Bars (omitted for brevity, assume existing) ... */}
        {isSyncing && (
            <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center text-white">
                <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin mb-4"></div>
@@ -856,7 +872,6 @@ const MobileEditor: React.FC = () => {
 
        <PaletteModal isOpen={isPaletteOpen} onClose={() => setIsPaletteOpen(false)} onSelect={(c) => { setSelectedBead(c); addToRecent(c); setTool('pen'); setIsPaletteOpen(false); }} />
        
-       {/* Modals ... (Keep existing modals) */}
        {showConvertConfirm && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6">
@@ -882,7 +897,6 @@ const MobileEditor: React.FC = () => {
          </div>
        )}
 
-       {/* Success Modal */}
        {showConvertSuccess && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
             <div className="bg-white dark:bg-surface-dark w-full max-w-sm rounded-2xl shadow-2xl p-6 flex flex-col items-center">
@@ -958,6 +972,11 @@ const MobileEditor: React.FC = () => {
                         <button onClick={() => processExport(true)} className="w-full flex items-center p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#1e1e30] hover:bg-white dark:hover:bg-gray-800 hover:shadow-md transition-all group">
                             <div className="h-12 w-12 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center text-purple-600 dark:text-purple-400 group-hover:scale-110 transition-transform"><span className="material-symbols-outlined">auto_fix</span></div>
                             <div className="ml-4 flex-1 text-left"><h4 className="font-bold text-gray-900 dark:text-white">转换为套装色</h4><p className="text-xs text-gray-500 mt-1">自动替换为 {paletteConfig.brand} 套装内的近似色</p></div>
+                            <span className="material-symbols-outlined text-gray-400">chevron_right</span>
+                        </button>
+                        <button onClick={handleDevExport} className="w-full flex items-center p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#1e1e30] hover:bg-white dark:hover:bg-gray-800 hover:shadow-md transition-all group">
+                            <div className="h-12 w-12 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300 group-hover:scale-110 transition-transform"><span className="material-symbols-outlined">code</span></div>
+                            <div className="ml-4 flex-1 text-left"><h4 className="font-bold text-gray-900 dark:text-white">【开发者】导出 JSON</h4><p className="text-xs text-gray-500 mt-1">导出 Grid Data 上传到 OSS</p></div>
                             <span className="material-symbols-outlined text-gray-400">chevron_right</span>
                         </button>
                     </div>

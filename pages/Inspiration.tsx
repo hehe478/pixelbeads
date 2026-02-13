@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+
+import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { DEMO_ARTS, CATEGORIES } from '../types';
+import { CATEGORIES, PixelArt } from '../types';
 import { useColorPalette } from '../context/ColorContext';
 import PaletteManagerModal from '../components/PaletteManagerModal';
+import { CloudTemplateAPI } from '../utils/mockBackend';
 
 const Inspiration: React.FC = () => {
   const navigate = useNavigate();
@@ -13,13 +15,83 @@ const Inspiration: React.FC = () => {
     setBrand, 
     setSet, 
     customPalettes,
-    selectCustomPalette,
-    getActiveCustomPalette 
+    selectCustomPalette
   } = useColorPalette();
   const [isManagerOpen, setIsManagerOpen] = useState(false);
+  
+  // Data State
+  const [templates, setTemplates] = useState<PixelArt[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isFetchingDetail, setIsFetchingDetail] = useState(false);
+  
+  // Category State
+  const [activeCategory, setActiveCategory] = useState('全部');
+
+  // Load Index on Mount
+  useEffect(() => {
+    const loadIndex = async () => {
+        try {
+            const data = await CloudTemplateAPI.fetchIndex();
+            setTemplates(data);
+        } catch (e) {
+            console.error("Failed to load templates");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    loadIndex();
+  }, []);
+
+  // Filter Logic
+  const filteredArts = useMemo(() => {
+    if (activeCategory === '全部') return templates;
+    return templates.filter(art => art.category === activeCategory);
+  }, [activeCategory, templates]);
+
+  // Handle Template Click
+  const handleArtClick = async (art: PixelArt) => {
+    if (isFetchingDetail) return;
+    
+    // If no data URL, we can't load it (or legacy fallback)
+    if (!art.dataUrl) {
+        alert("此图纸暂无数据");
+        return;
+    }
+
+    setIsFetchingDetail(true);
+    try {
+        // Fetch the heavy grid data from "Cloud" (OSS)
+        const templateData = await CloudTemplateAPI.fetchTemplateData(art.dataUrl);
+        
+        // Navigate to Editor with fetched data
+        navigate(`/editor/new`, { 
+          state: { 
+            grid: templateData.grid, 
+            width: templateData.width, 
+            height: templateData.height,
+            title: art.title,
+            isFreeMode: false 
+          } 
+        });
+    } catch (e) {
+        alert("加载图纸失败，请检查网络");
+    } finally {
+        setIsFetchingDetail(false);
+    }
+  };
 
   return (
     <div className="relative flex h-full min-h-screen w-full flex-col overflow-hidden mx-auto max-w-md bg-background-light dark:bg-background-dark shadow-2xl pb-24">
+      {/* Detail Loading Overlay */}
+      {isFetchingDetail && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+              <div className="bg-white dark:bg-surface-dark px-6 py-4 rounded-2xl flex items-center gap-3 shadow-2xl">
+                  <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-sm font-bold text-gray-800 dark:text-white">正在下载图纸数据...</span>
+              </div>
+          </div>
+      )}
+
       <div className="sticky top-0 z-20 bg-background-light/95 dark:bg-background-dark/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 pb-3">
         <div className="h-11 w-full"></div>
         <div className="px-4">
@@ -74,7 +146,7 @@ const Inspiration: React.FC = () => {
       </div>
       <div className="flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar">
         <div className="px-4 pt-4 pb-2">
-          <div className="relative w-full h-48 rounded-xl overflow-hidden group shadow-lg cursor-pointer" onClick={() => navigate('/editor/featured')}>
+          <div className="relative w-full h-48 rounded-xl overflow-hidden group shadow-lg cursor-pointer">
             <div className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105" style={{ backgroundImage: "url('https://lh3.googleusercontent.com/aida-public/AB6AXuB12KjebCZNIJBgJUMOmRKSTWMKIWIf0bzc9Ic_X5lz_wPJAiHGkcgdu9mBMna0zg-hpsBoRlVEGu_GvW5OFrZQ2nXNF95ADEJYL3xgK6kk4YBKP6fXmCpQJBPWw1hV74hfCLB5P7uYUz88BhhoIE__G8gJrMDjdRs2Xa82n6Azr7A6GZ-izbZJO02p7sALeirYhfXa-hJSD90LgfO3HdJzQexxxaKoc9JC3mXRSd7CkxQj5o-DJIdB2cmRul_6cx0KbiYeDcZmaLi8')" }}></div>
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"></div>
             <div className="absolute bottom-0 left-0 p-5 w-full">
@@ -83,24 +155,57 @@ const Inspiration: React.FC = () => {
             </div>
           </div>
         </div>
+        
+        {/* Category Tabs */}
         <div className="flex gap-3 px-4 py-3 overflow-x-auto hide-scrollbar sticky top-0 z-10 bg-background-light dark:bg-background-dark">
-          <button className="flex h-10 shrink-0 items-center justify-center gap-x-2 rounded-full bg-primary pl-5 pr-5 shadow-md shadow-primary/30 transition-all active:scale-95"><span className="text-white text-sm font-semibold leading-normal">卡通</span></button>
-          {CATEGORIES.slice(1, 5).map(cat => (
-            <button key={cat} className="flex h-10 shrink-0 items-center justify-center gap-x-2 rounded-full bg-white dark:bg-[#1a1a2e] border border-gray-100 dark:border-gray-800 pl-5 pr-5 transition-all hover:bg-gray-50 active:scale-95"><span className="text-gray-700 dark:text-gray-300 text-sm font-medium leading-normal">{cat}</span></button>
+          {CATEGORIES.map(cat => (
+            <button 
+                key={cat} 
+                onClick={() => setActiveCategory(cat)}
+                className={`flex h-10 shrink-0 items-center justify-center gap-x-2 rounded-full pl-5 pr-5 transition-all active:scale-95 ${
+                    activeCategory === cat 
+                    ? 'bg-primary text-white shadow-md shadow-primary/30 font-semibold' 
+                    : 'bg-white dark:bg-[#1a1a2e] border border-gray-100 dark:border-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-medium'
+                }`}
+            >
+                <span className="text-sm leading-normal">{cat}</span>
+            </button>
           ))}
         </div>
+
         <div className="px-4 pb-4 mt-2">
-          <div className="columns-2 gap-4 space-y-4">
-            {DEMO_ARTS.map((art) => (
-              <div key={art.id} onClick={() => navigate(`/editor/${art.id}`)} className="break-inside-avoid relative rounded-xl bg-white dark:bg-[#1e1e30] p-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer">
-                <div className={`relative w-full rounded-lg bg-gray-50 dark:bg-gray-800 overflow-hidden mb-3 aspect-[${Math.random() > 0.5 ? '4/5' : '1/1'}]`}><img alt={art.title} className="h-full w-full object-cover object-center pixelated-image" src={art.imageUrl} /></div>
-                <div className="flex flex-col gap-1">
-                  <h3 className="text-gray-900 dark:text-white font-semibold text-sm line-clamp-1">{art.title}</h3>
-                  <div className="flex items-center justify-between"><span className="text-xs text-gray-500 dark:text-gray-400">@{art.author}</span></div>
-                </div>
+          {isLoading ? (
+              <div className="flex justify-center py-20">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               </div>
-            ))}
-          </div>
+          ) : filteredArts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 opacity-50">
+                  <span className="material-symbols-outlined text-4xl mb-2">image_search</span>
+                  <p className="text-sm">该分类下暂无图纸</p>
+              </div>
+          ) : (
+            <div className="columns-2 gap-4 space-y-4">
+                {filteredArts.map((art) => (
+                <div key={art.id} onClick={() => handleArtClick(art)} className="break-inside-avoid relative rounded-xl bg-white dark:bg-[#1e1e30] p-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer group">
+                    <div className={`relative w-full rounded-lg bg-gray-50 dark:bg-gray-800 overflow-hidden mb-3 aspect-[${Math.random() > 0.5 ? '4/5' : '1/1'}]`}>
+                        <img alt={art.title} className="h-full w-full object-cover object-center pixelated-image group-hover:scale-105 transition-transform duration-500" src={art.imageUrl} />
+                        {art.difficulty === 'Simple' && <span className="absolute top-2 right-2 bg-green-500 text-white text-[10px] px-1.5 py-0.5 rounded shadow-sm font-bold">简单</span>}
+                        {art.difficulty === 'Medium' && <span className="absolute top-2 right-2 bg-yellow-500 text-white text-[10px] px-1.5 py-0.5 rounded shadow-sm font-bold">中等</span>}
+                        {art.difficulty === 'Hard' && <span className="absolute top-2 right-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded shadow-sm font-bold">困难</span>}
+                    </div>
+                    <div className="flex flex-col gap-1">
+                    <h3 className="text-gray-900 dark:text-white font-semibold text-sm line-clamp-1">{art.title}</h3>
+                    <div className="flex items-center justify-between">
+                        <span className="text-xs text-gray-500 dark:text-gray-400">@{art.author}</span>
+                        <div className="flex items-center gap-0.5 text-xs text-gray-400">
+                            <span className="material-symbols-outlined text-[12px]">favorite</span> {art.likes}
+                        </div>
+                    </div>
+                    </div>
+                </div>
+                ))}
+            </div>
+          )}
         </div>
       </div>
       <PaletteManagerModal isOpen={isManagerOpen} onClose={() => setIsManagerOpen(false)}/>
